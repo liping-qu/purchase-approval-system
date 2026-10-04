@@ -39,7 +39,7 @@ cd D:\purchase-approval-system
 docker compose up -d --build
 ```
 
-打开 <http://localhost:8081>，后端接口文档为 <http://localhost:8080/swagger-ui.html>。
+打开 <http://localhost:8081>，后端接口文档为 <http://localhost:8080/swagger-ui/index.html>。
 
 本项目将宿主机 MySQL 映射为 `3307`，容器内部仍然使用 `mysql:3306`，避免与 Windows 已运行的 MySQL 服务冲突。
 
