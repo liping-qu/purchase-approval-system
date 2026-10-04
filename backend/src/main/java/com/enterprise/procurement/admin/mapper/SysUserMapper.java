@@ -1,0 +1,3 @@
+package com.enterprise.procurement.admin.mapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper; import com.enterprise.procurement.admin.entity.SysUser; import org.apache.ibatis.annotations.*; import java.util.Set;
+@Mapper public interface SysUserMapper extends BaseMapper<SysUser> { @Select("select r.code from sys_role r join sys_user_role ur on ur.role_id=r.id where ur.user_id=#{id}") Set<String> roleCodes(Long id); @Select("select p.code from sys_permission p join sys_role_permission rp on rp.permission_id=p.id join sys_user_role ur on ur.role_id=rp.role_id where ur.user_id=#{id}") Set<String> permissionCodes(Long id); @Select("select * from sys_user where username=#{username} limit 1") SysUser findByUsername(String username); }

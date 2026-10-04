@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+purchase.db
+.venv/
+.env
+backend/target/
+frontend/node_modules/
+frontend/dist/
+*.iml
+.idea/
+.m2/

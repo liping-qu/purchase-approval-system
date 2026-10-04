@@ -1,0 +1,3 @@
+package com.enterprise.procurement.dto;
+import jakarta.validation.Valid; import jakarta.validation.constraints.*; import java.math.BigDecimal; import java.util.List;
+public final class PurchaseRequestDtos { private PurchaseRequestDtos(){} public record Item(@NotNull Long productId,@NotNull @Min(1) Integer quantity,@NotNull @DecimalMin("0.0") BigDecimal unitPrice){} public record Create(@NotBlank String reason,@NotEmpty List<@Valid Item> items){} public record Update(@NotBlank String reason,@NotEmpty List<@Valid Item> items){} public record Approval(@NotBlank String action,String comment){} public record CreateOrder(Long requestId,@NotNull Long supplierId){} }

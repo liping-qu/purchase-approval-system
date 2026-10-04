@@ -1,0 +1,3 @@
+package com.enterprise.procurement.persistence.mapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper; import com.enterprise.procurement.persistence.entity.PurchaseRequestItemEntity; import org.apache.ibatis.annotations.*; import java.util.*;
+@Mapper public interface PurchaseRequestItemMapper extends BaseMapper<PurchaseRequestItemEntity> { @Select("SELECT * FROM purchase_request_item WHERE request_id=#{requestId}") List<PurchaseRequestItemEntity> byRequest(@Param("requestId") Long id); @Delete("DELETE FROM purchase_request_item WHERE request_id=#{requestId}") int deleteByRequest(@Param("requestId") Long id); }

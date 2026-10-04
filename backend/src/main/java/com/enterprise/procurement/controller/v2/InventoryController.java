@@ -1,0 +1,3 @@
+package com.enterprise.procurement.controller.v2;
+import com.enterprise.procurement.business.PurchaseBusinessService; import com.enterprise.procurement.dto.ApiResponse; import org.springframework.web.bind.annotation.*;
+@RestController @RequestMapping("/api/inventory") public class InventoryController {private final PurchaseBusinessService s; public InventoryController(PurchaseBusinessService s){this.s=s;} @GetMapping("/stock") public ApiResponse<?> stock(){return ApiResponse.ok(s.stock());} @GetMapping("/transactions") public ApiResponse<?> transactions(){return ApiResponse.ok(s.transactions());}}

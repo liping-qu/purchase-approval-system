@@ -1,0 +1,5 @@
+package com.enterprise.procurement.model;
+
+import java.time.LocalDateTime;
+
+public class InventoryRecord { private Long id; private Long productId; private String productName; private Integer quantity; private String type; private String referenceNo; private LocalDateTime createdAt=LocalDateTime.now(); public InventoryRecord(){} public InventoryRecord(Long i,Long p,String n,Integer q,String t,String r){id=i;productId=p;productName=n;quantity=q;type=t;referenceNo=r;} public Long getId(){return id;} public void setId(Long v){id=v;} public Long getProductId(){return productId;} public void setProductId(Long v){productId=v;} public String getProductName(){return productName;} public void setProductName(String v){productName=v;} public Integer getQuantity(){return quantity;} public void setQuantity(Integer v){quantity=v;} public String getType(){return type;} public void setType(String v){type=v;} public String getReferenceNo(){return referenceNo;} public void setReferenceNo(String v){referenceNo=v;} public LocalDateTime getCreatedAt(){return createdAt;} public void setCreatedAt(LocalDateTime v){createdAt=v;} }

@@ -1,0 +1,3 @@
+package com.enterprise.procurement.persistence.mapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper; import com.enterprise.procurement.persistence.entity.PurchaseOrderEntity; import org.apache.ibatis.annotations.*;
+@Mapper public interface PurchaseOrderMapper extends BaseMapper<PurchaseOrderEntity> { @Update("UPDATE purchase_order SET status=#{toStatus}, version=version+1, updated_at=NOW() WHERE id=#{id} AND status=#{fromStatus} AND version=#{version}") int transition(@Param("id") Long id,@Param("fromStatus") String from,@Param("toStatus") String to,@Param("version") Integer version); }

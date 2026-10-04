@@ -1,0 +1,3 @@
+package com.enterprise.procurement.persistence.entity;
+import com.baomidou.mybatisplus.annotation.*; import java.math.BigDecimal;
+@TableName("sys_product") public class ProductEntity { @TableId private Long id; private String name; private BigDecimal referencePrice; private Integer stock; public Long getId(){return id;} public void setId(Long v){id=v;} public String getName(){return name;} public void setName(String v){name=v;} public BigDecimal getReferencePrice(){return referencePrice;} public void setReferencePrice(BigDecimal v){referencePrice=v;} public Integer getStock(){return stock;} public void setStock(Integer v){stock=v;} }
