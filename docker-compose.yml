@@ -1,0 +1,48 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: procurement-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: procurement
+      TZ: Asia/Shanghai
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/procurement.sql:/docker-entrypoint-initdb.d/01-procurement.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7.4-alpine
+    container_name: procurement-redis
+    ports: ["6379:6379"]
+    volumes: ["redis_data:/data"]
+  backend:
+    build: .
+    container_name: procurement-backend
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_started }
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/procurement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_PROFILES_ACTIVE: docker
+    ports: ["8080:8080"]
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: procurement-frontend:local
+    container_name: procurement-frontend
+    depends_on: [backend]
+    ports: ["80:80"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+volumes:
+  mysql_data:
+  redis_data:

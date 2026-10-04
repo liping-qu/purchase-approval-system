@@ -1,0 +1,30 @@
+package com.enterprise.procurement.admin.controller;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page; import com.enterprise.procurement.admin.dto.AdminDtos.*; import com.enterprise.procurement.admin.entity.*; import com.enterprise.procurement.admin.service.AdminService; import com.enterprise.procurement.dto.ApiResponse; import jakarta.validation.Valid; import org.springframework.security.access.prepost.PreAuthorize; import org.springframework.web.bind.annotation.*; import java.util.*; import java.util.stream.Collectors;
+@RestController @RequestMapping("/api/admin") public class AdminController {
+ private final AdminService service; public AdminController(AdminService s){service=s;}
+ @GetMapping("/users") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<?> users(UserQuery q){Page<SysUser> p=service.userPage(q);return ApiResponse.ok(Map.of("records",p.getRecords().stream().map(u -> service.user(u.getId())).toList(),"total",p.getTotal(),"page",p.getCurrent(),"size",p.getSize()));}
+ @GetMapping("/users/{id}") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<UserVO> user(@PathVariable Long id){UserVO v=service.user(id);return v==null?ApiResponse.fail("用户不存在"):ApiResponse.ok(v);}
+ @PostMapping("/users") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<UserVO> create(@Valid @RequestBody UserCreate x){return ApiResponse.ok(service.create(x));}
+ @PutMapping("/users/{id}") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<UserVO> update(@PathVariable Long id,@Valid @RequestBody UserUpdate x){UserVO v=service.update(id,x);return v==null?ApiResponse.fail("用户不存在"):ApiResponse.ok(v);}
+ @DeleteMapping("/users/{id}") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<Boolean> delete(@PathVariable Long id){return ApiResponse.ok(service.deleteUser(id));}
+ @GetMapping("/departments") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<List<Department>> departments(){return ApiResponse.ok(service.departmentList());}
+ @PostMapping("/departments") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<Department> addDepartment(@Valid @RequestBody DepartmentRequest x){return ApiResponse.ok(service.saveDepartment(null,x));}
+ @PutMapping("/departments/{id}") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<Department> editDepartment(@PathVariable Long id,@Valid @RequestBody DepartmentRequest x){return ApiResponse.ok(service.saveDepartment(id,x));}
+ @DeleteMapping("/departments/{id}") @PreAuthorize("hasAuthority('user:manage') or hasRole('ADMIN')") public ApiResponse<Boolean> delDepartment(@PathVariable Long id){return ApiResponse.ok(service.deleteDepartment(id));}
+ @GetMapping("/roles") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<List<Role>> roles(){return ApiResponse.ok(service.roleList());}
+ @PostMapping("/roles") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Role> addRole(@Valid @RequestBody RoleRequest x){return ApiResponse.ok(service.saveRole(null,x));}
+ @PutMapping("/roles/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Role> editRole(@PathVariable Long id,@Valid @RequestBody RoleRequest x){return ApiResponse.ok(service.saveRole(id,x));}
+ @DeleteMapping("/roles/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Boolean> delRole(@PathVariable Long id){return ApiResponse.ok(service.deleteRole(id));}
+ @GetMapping("/permissions") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<List<Permission>> permissions(){return ApiResponse.ok(service.permissionList());}
+ @PostMapping("/permissions") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Permission> addPermission(@Valid @RequestBody PermissionRequest x){return ApiResponse.ok(service.savePermission(null,x));}
+ @PutMapping("/permissions/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Permission> editPermission(@PathVariable Long id,@Valid @RequestBody PermissionRequest x){return ApiResponse.ok(service.savePermission(id,x));}
+ @DeleteMapping("/permissions/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Boolean> delPermission(@PathVariable Long id){return ApiResponse.ok(service.deletePermission(id));}
+ @GetMapping("/menus") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<List<Menu>> menus(){return ApiResponse.ok(service.menuList());}
+ @PostMapping("/menus") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Menu> addMenu(@Valid @RequestBody MenuRequest x){return ApiResponse.ok(service.saveMenu(null,x));}
+ @PutMapping("/menus/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Menu> editMenu(@PathVariable Long id,@Valid @RequestBody MenuRequest x){return ApiResponse.ok(service.saveMenu(id,x));}
+ @DeleteMapping("/menus/{id}") @PreAuthorize("hasAuthority('role:manage') or hasRole('ADMIN')") public ApiResponse<Boolean> delMenu(@PathVariable Long id){return ApiResponse.ok(service.deleteMenu(id));}
+ @GetMapping("/configs") @PreAuthorize("hasRole('ADMIN')") public ApiResponse<List<SysConfig>> configs(){return ApiResponse.ok(service.configList());}
+ @PostMapping("/configs") @PreAuthorize("hasRole('ADMIN')") public ApiResponse<SysConfig> addConfig(@Valid @RequestBody ConfigRequest x){return ApiResponse.ok(service.saveConfig(null,x));}
+ @PutMapping("/configs/{id}") @PreAuthorize("hasRole('ADMIN')") public ApiResponse<SysConfig> editConfig(@PathVariable Long id,@Valid @RequestBody ConfigRequest x){return ApiResponse.ok(service.saveConfig(id,x));}
+ @DeleteMapping("/configs/{id}") @PreAuthorize("hasRole('ADMIN')") public ApiResponse<Boolean> delConfig(@PathVariable Long id){return ApiResponse.ok(service.deleteConfig(id));}
+}
