@@ -7,7 +7,7 @@ import org.mybatis.spring.annotation.MapperScan;
 
 @SpringBootApplication
 @EnableScheduling
-@MapperScan("com.enterprise.procurement.persistence.mapper")
+@MapperScan({"com.enterprise.procurement.persistence.mapper", "com.enterprise.procurement.admin.mapper"})
 public class ProcurementApplication {
     public static void main(String[] args) { SpringApplication.run(ProcurementApplication.class, args); }
 }
