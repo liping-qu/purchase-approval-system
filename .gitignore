@@ -8,3 +8,8 @@ frontend/node_modules/
 frontend/dist/
 *.iml
 .idea/
+.m2/
+# 助手工作区数据（记忆/缓存），不入版本库
+.workbuddy/
+# 2026-10-29 仓库重建时留下的坏 gitdir 指针，仅作留档
+*.broken.bak

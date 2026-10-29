@@ -11,6 +11,8 @@ public final class AdminDtos {
  public record MenuRequest(@NotBlank String name,Long parentId,String path,String icon,String permissionCode,Integer sortOrder,Integer status){}
  public record ConfigRequest(@NotBlank String configKey,@NotBlank String configValue,String description){}
  public record UserVO(Long id,String username,String nickname,String phone,String email,Long departmentId,Integer status,Set<String> roles,Set<String> permissions){}
+ /** 用户列表用的轻量视图：带部门名称、不含密码与权限明细，避免列表接口产生 N+1 查询。 */
+ public record UserSummaryVO(Long id,String username,String nickname,String department,Integer status,Set<String> roles){}
  public record SimpleVO(Long id,String code,String name){}
  public record MenuVO(Long id,Long parentId,String name,String path,String icon,String permissionCode,Integer sortOrder,Integer status){}
  public record ConfigVO(Long id,String configKey,String configValue,String description){}

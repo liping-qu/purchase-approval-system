@@ -3,9 +3,20 @@ server:
 spring:
   application:
     name: procurement-approval-system
+  flyway:
+    # 结构变更唯一入口：db/migration 下的版本化脚本
+    enabled: true
+    locations: classpath:db/migration
+    # 存量库（已有表、没有 flyway_schema_history）自动以 V1 为基线，不重跑 V1，只执行 V2 之后的增量。
+    # 全新空库不会被 baseline，会依次执行 V1~Vn。
+    baseline-on-migrate: true
+    baseline-version: 1
+    # 迁移失败立即中止启动，避免"半套结构"继续提供服务
+    fail-on-missing-locations: true
   sql:
     init:
-      mode: always
+      # 旧的 schema.sql 已废弃，结构改由 Flyway 管理
+      mode: never
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -21,7 +32,9 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
 app:
   jwt:
-    secret: ${JWT_SECRET:change-this-secret-key-for-production-please-123456789}
+    # 故意不给默认值：默认密钥等于公开密钥，任何人 clone 后都能伪造 token。
+    # 未注入 JWT_SECRET 时应用直接启动失败（JwtService 构造器里显式抛错）。
+    secret: ${JWT_SECRET:}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 mybatis-plus:
   mapper-locations: classpath:/mapper/*.xml
@@ -35,3 +48,7 @@ management:
     web:
       exposure:
         include: health,info
+logging:
+  pattern:
+    # %X{traceId} 由 TraceIdFilter 写入 MDC，-: 表示缺失时留空
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"

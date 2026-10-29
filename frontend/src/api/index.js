@@ -14,7 +14,7 @@ async function request(method, url, data, fallback, config = {}) {
 
 export const api = {
   login: (payload) => request('post', '/auth/login', payload, () => mockApi.login(payload)),
-  dashboard: () => request('get', '/dashboard', null, () => mockApi.dashboard()),
+  dashboard: () => request('get', '/dashboard/summary', null, () => mockApi.dashboard()),
   requests: (params) => request('get', '/purchase-requests', params, () => mockApi.requests(params)),
   createRequest: (payload) => request('post', '/purchase-requests', payload, () => mockApi.createRequest(payload)),
   submitRequest: (id) => request('post', `/purchase-requests/${id}/submit`, null, () => mockApi.submitRequest(id)),
@@ -28,6 +28,6 @@ export const api = {
   receiveOrder: (id) => request('post', `/purchase-orders/${id}/delivered`, null, () => mockApi.receiveOrder(id)),
   inventory: () => request('get', '/inventory/stock', null, () => mockApi.inventory()),
   adjustInventory: (id, quantity) => request('post', `/inventory/${id}/adjust`, { quantity }, () => mockApi.adjustInventory(id, quantity)),
-  logs: () => request('get', '/operation-logs', null, () => mockApi.logs()),
+  logs: () => request('get', '/admin/operation-logs', null, () => mockApi.logs()),
   users: () => request('get', '/users', null, () => mockApi.users())
 }

@@ -1,10 +1,83 @@
 package com.enterprise.procurement.security;
 
-import com.enterprise.procurement.persistence.mapper.CatalogMapper; import jakarta.servlet.FilterChain; import jakarta.servlet.ServletException; import jakarta.servlet.http.*; import org.springframework.security.authentication.UsernamePasswordAuthenticationToken; import org.springframework.security.core.authority.SimpleGrantedAuthority; import org.springframework.security.core.context.SecurityContextHolder; import org.springframework.stereotype.Component; import org.springframework.web.filter.OncePerRequestFilter; import java.io.IOException; import java.util.stream.Collectors;
+import com.enterprise.procurement.persistence.mapper.CatalogMapper;
+import io.jsonwebtoken.Claims;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
 
+import java.io.IOException;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * 每请求解析 Bearer token 并建立 SecurityContext。
+ *
+ * <p>三道门，任一不过就<b>不建立认证</b>（请求继续走，由 SecurityConfig 的
+ * authenticationEntryPoint 统一回 401，而不是在这里直接写响应）：</p>
+ * <ol>
+ *   <li>验签/有效期 —— {@link JwtService#parse}；</li>
+ *   <li>账号仍存在且启用 —— {@code sys_user.status = 1}，删号或禁用即刻失效；</li>
+ *   <li>token 版本一致 —— {@code tv} 声明与 {@code sys_user.token_version} 相等，
+ *       改密/强制下线后旧的 token 在这里被挡住。</li>
+ * </ol>
+ */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
-    private final JwtService jwt; private final CatalogMapper catalog;
-    public JwtAuthenticationFilter(JwtService jwt,CatalogMapper catalog){this.jwt=jwt;this.catalog=catalog;}
-    @Override protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)throws ServletException,IOException {String h=req.getHeader("Authorization"); if(h!=null&&h.startsWith("Bearer ")){String t=h.substring(7); if(jwt.valid(t)){String username=jwt.username(t); var u=catalog.user(username); if(u!=null){var authorities=catalog.roleCodes(u.getId()).stream().map(r->{String x=r.toUpperCase();return new SimpleGrantedAuthority(x.startsWith("ROLE_")?x:"ROLE_"+x);}).collect(Collectors.toSet()); SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(username,null,authorities));}}} chain.doFilter(req,res);}
+
+    private static final String BEARER_PREFIX = "Bearer ";
+
+    private final JwtService jwt;
+    private final CatalogMapper catalog;
+
+    public JwtAuthenticationFilter(JwtService jwt, CatalogMapper catalog) {
+        this.jwt = jwt;
+        this.catalog = catalog;
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+            throws ServletException, IOException {
+        String header = req.getHeader("Authorization");
+        if (header != null && header.startsWith(BEARER_PREFIX)) {
+            authenticate(header.substring(BEARER_PREFIX.length()).trim());
+        }
+        chain.doFilter(req, res);
+    }
+
+    private void authenticate(String token) {
+        try {
+            Claims claims = jwt.parse(token);
+            String username = claims.getSubject();
+            if (username == null || username.isBlank()) {
+                return;
+            }
+            var user = catalog.user(username);
+            if (user == null) {
+                return;
+            }
+            if (jwt.tokenVersion(claims) != safeVersion(user.getTokenVersion())) {
+                return;
+            }
+            Set<SimpleGrantedAuthority> authorities = catalog.roleCodes(user.getId()).stream()
+                    .map(code -> code.toUpperCase())
+                    .map(code -> code.startsWith("ROLE_") ? code : "ROLE_" + code)
+                    .map(SimpleGrantedAuthority::new)
+                    .collect(Collectors.toSet());
+            SecurityContextHolder.getContext()
+                    .setAuthentication(new UsernamePasswordAuthenticationToken(username, null, authorities));
+        } catch (Exception ignored) {
+            // 验签失败/过期/格式错误：保持匿名，交由后续鉴权环节返回 401
+        }
+    }
+
+    private int safeVersion(Integer stored) {
+        return stored == null ? 0 : stored;
+    }
 }
