@@ -36,6 +36,12 @@ app:
     # 未注入 JWT_SECRET 时应用直接启动失败（JwtService 构造器里显式抛错）。
     secret: ${JWT_SECRET:}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  auth-cache:
+    # 鉴权快照缓存：命中后每请求省掉 2 次查库（sys_user+部门、sys_role+用户角色）。
+    # 置 false 可完全退化为每请求查库，用于压测对比与故障排查。
+    enabled: ${AUTH_CACHE_ENABLED:true}
+    # TTL 只是兜底，正确性靠改密/改用户/删用户后的显式失效，不要把它当成一致性保证。
+    ttl-seconds: ${AUTH_CACHE_TTL_SECONDS:300}
 mybatis-plus:
   mapper-locations: classpath:/mapper/*.xml
   configuration:

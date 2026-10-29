@@ -4,6 +4,7 @@ import com.enterprise.procurement.admin.mapper.SysUserMapper;
 import com.enterprise.procurement.dto.ApiResponse;
 import com.enterprise.procurement.dto.AuthDtos;
 import com.enterprise.procurement.persistence.mapper.CatalogMapper;
+import com.enterprise.procurement.security.AuthCacheService;
 import com.enterprise.procurement.security.JwtService;
 import jakarta.validation.Valid;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -22,12 +23,15 @@ public class AuthController {
     private final SysUserMapper users;
     private final JwtService jwt;
     private final PasswordEncoder encoder;
+    private final AuthCacheService cache;
 
-    public AuthController(CatalogMapper catalog, SysUserMapper users, JwtService jwt, PasswordEncoder encoder) {
+    public AuthController(CatalogMapper catalog, SysUserMapper users, JwtService jwt, PasswordEncoder encoder,
+                          AuthCacheService cache) {
         this.catalog = catalog;
         this.users = users;
         this.jwt = jwt;
         this.encoder = encoder;
+        this.cache = cache;
     }
 
     @PostMapping("/login")
@@ -89,6 +93,9 @@ public class AuthController {
         patch.setPassword(encoder.encode(req.newPassword()));
         patch.setTokenVersion((user.getTokenVersion() == null ? 0 : user.getTokenVersion()) + 1);
         users.updateById(patch);
+        // 必须立刻删掉鉴权快照：否则缓存里仍是旧 token_version，
+        // "改密即踢下线"会退化成"改密后最多再活一个 TTL"
+        cache.evict(user.getUsername());
         return ApiResponse.ok("密码已修改，请重新登录", null);
     }
 }

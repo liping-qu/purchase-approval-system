@@ -27,6 +27,9 @@ import java.util.stream.Collectors;
  *   <li>token 版本一致 —— {@code tv} 声明与 {@code sys_user.token_version} 相等，
  *       改密/强制下线后旧的 token 在这里被挡住。</li>
  * </ol>
+ *
+ * <p>第 2、3 步原本每请求两次查库，现在走 {@link AuthCacheService}：命中则零次查库，
+ * 未命中回源一次并把结果写回缓存。注意"用户不存在"不写缓存，避免新建账号被阴性结果挡住。</p>
  */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -35,10 +38,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwt;
     private final CatalogMapper catalog;
+    private final AuthCacheService cache;
 
-    public JwtAuthenticationFilter(JwtService jwt, CatalogMapper catalog) {
+    public JwtAuthenticationFilter(JwtService jwt, CatalogMapper catalog, AuthCacheService cache) {
         this.jwt = jwt;
         this.catalog = catalog;
+        this.cache = cache;
     }
 
     @Override
@@ -58,14 +63,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             if (username == null || username.isBlank()) {
                 return;
             }
-            var user = catalog.user(username);
-            if (user == null) {
+            AuthSnapshot snapshot = cache.get(username);
+            if (snapshot == null) {
+                snapshot = loadFromDb(username);
+                if (snapshot == null) {
+                    return; // 账号不存在或已禁用：不缓存阴性结果
+                }
+                cache.put(snapshot);
+            }
+            if (jwt.tokenVersion(claims) != snapshot.tokenVersion()) {
                 return;
             }
-            if (jwt.tokenVersion(claims) != safeVersion(user.getTokenVersion())) {
-                return;
-            }
-            Set<SimpleGrantedAuthority> authorities = catalog.roleCodes(user.getId()).stream()
+            Set<SimpleGrantedAuthority> authorities = snapshot.roles().stream()
                     .map(code -> code.toUpperCase())
                     .map(code -> code.startsWith("ROLE_") ? code : "ROLE_" + code)
                     .map(SimpleGrantedAuthority::new)
@@ -77,7 +86,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    private int safeVersion(Integer stored) {
-        return stored == null ? 0 : stored;
+    /** 回源：一次用户查询 + 一次角色查询，结果封装成快照。 */
+    private AuthSnapshot loadFromDb(String username) {
+        var user = catalog.user(username);
+        if (user == null) {
+            return null;
+        }
+        int version = user.getTokenVersion() == null ? 0 : user.getTokenVersion();
+        return new AuthSnapshot(user.getId(), user.getUsername(), version, catalog.roleCodes(user.getId()));
     }
 }
+
