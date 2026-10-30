@@ -22,7 +22,7 @@ public class PurchaseOrderController {
 
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','PURCHASER')")
-    @OperationLog("创建采购订单")
+    @OperationLog(value = "创建采购订单", module = "采购订单")
     public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.CreateOrder request,
                                  @RequestParam(required = false) Long requestId) {
         Long id = request.requestId() != null ? request.requestId() : requestId;
@@ -43,7 +43,7 @@ public class PurchaseOrderController {
 
     @PostMapping("/{id}/delivered")
     @PreAuthorize("hasAnyRole('ADMIN','WAREHOUSE')")
-    @OperationLog("确认订单入库")
+    @OperationLog(value = "确认订单入库", module = "库存")
     public ApiResponse<?> delivered(@PathVariable Long id, Principal principal) {
         return ApiResponse.ok("已入库", service.delivered(id, service.userId(principal.getName())));
     }

@@ -1,5 +1,6 @@
 package com.enterprise.procurement.controller.v2;
 
+import com.enterprise.procurement.aspect.OperationLog;
 import com.enterprise.procurement.business.PurchaseBusinessService;
 import com.enterprise.procurement.dto.ApiResponse;
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
@@ -34,6 +35,7 @@ public class ApprovalController {
 
     @PostMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN','MANAGER')")
+    @OperationLog(value = "审批采购申请", module = "审批")
     public ApiResponse<?> approve(@PathVariable Long id,
                                   @Valid @RequestBody PurchaseRequestDtos.Approval dto,
                                   Principal principal) {

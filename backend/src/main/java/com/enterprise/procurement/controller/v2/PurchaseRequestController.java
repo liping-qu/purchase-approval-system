@@ -1,5 +1,6 @@
 package com.enterprise.procurement.controller.v2;
 
+import com.enterprise.procurement.aspect.OperationLog;
 import com.enterprise.procurement.business.PurchaseBusinessService;
 import com.enterprise.procurement.dto.ApiResponse;
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
@@ -35,6 +36,7 @@ public class PurchaseRequestController {
     }
 
     @PostMapping
+    @OperationLog(value = "创建采购申请", module = "采购申请")
     public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.Create dto, Principal principal) {
         return ApiResponse.ok("草稿已创建", service.createDraft(principal.getName(), dto));
     }
@@ -52,11 +54,13 @@ public class PurchaseRequestController {
     }
 
     @PostMapping("/{id}/submit")
+    @OperationLog(value = "提交采购申请", module = "采购申请")
     public ApiResponse<?> submit(@PathVariable Long id, Principal principal) {
         return ApiResponse.ok(service.submit(id, principal.getName()));
     }
 
     @PostMapping("/{id}/withdraw")
+    @OperationLog(value = "撤回采购申请", module = "采购申请")
     public ApiResponse<?> withdraw(@PathVariable Long id, Principal principal) {
         return ApiResponse.ok(service.withdraw(id, principal.getName()));
     }
