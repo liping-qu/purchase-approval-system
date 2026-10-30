@@ -379,7 +379,8 @@ public class PurchaseBusinessService {
         if (!ApplicationStatus.APPROVED.name().equals(r.getStatus())) {
             throw new IllegalStateException("申请未审批通过");
         }
-        if (catalog.supplier(supplierId) == null) throw new IllegalArgumentException("供应商不存在");
+        // catalog.supplier 带 active=1 条件：已停用的供应商不能再下单，提示要能区分"没这个供应商"
+        if (catalog.supplier(supplierId) == null) throw new IllegalArgumentException("供应商不存在或已停用");
 
         PurchaseOrderEntity o = new PurchaseOrderEntity();
         o.setOrderNo(documentNo.nextOrderNo());
