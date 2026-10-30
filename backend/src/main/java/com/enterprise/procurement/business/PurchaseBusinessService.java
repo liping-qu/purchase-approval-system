@@ -204,12 +204,46 @@ public class PurchaseBusinessService {
         return o;
     }
 
-    public List<InventoryStockEntity> stock() {
-        return stock.selectList(null);
+    public List<InventoryStockRow> stock() {
+        return stock.stockRows();
     }
 
     public List<InventoryTransactionEntity> transactions() {
         return transactions.recent();
+    }
+
+    /**
+     * 手工调整库存：正数入库、负数出库。
+     *
+     * <p>为什么必须走这里而不是直接改 inventory_stock：库存变化必须留流水，
+     * 否则对账时"这个商品的 37 件是怎么来的"永远查不清。入库只加不减，
+     * 用 upsert 一条语句搞定；出库要先判断够不够，把判断和扣减压进同一条
+     * 带 {@code quantity >= n} 条件的 UPDATE，避免并发下把库存扣成负数。</p>
+     *
+     * @param quantity 正数入库、负数出库，0 无意义直接拒绝
+     */
+    @Transactional
+    public void adjustStock(Long productId, Integer quantity, Long operatorId) {
+        if (quantity == null || quantity == 0) {
+            throw new IllegalArgumentException("调整数量不能为 0");
+        }
+        if (catalog.product(productId) == null) {
+            throw new IllegalArgumentException("商品不存在或已停用");
+        }
+        if (quantity > 0) {
+            stock.upsertAndAdd(productId, quantity);
+        } else if (stock.deduct(productId, -quantity) == 0) {
+            throw new IllegalStateException("库存不足，无法出库");
+        }
+
+        InventoryTransactionEntity tx = new InventoryTransactionEntity();
+        tx.setProductId(productId);
+        tx.setQuantity(Math.abs(quantity));
+        tx.setType(quantity > 0 ? "IN" : "OUT");
+        tx.setReferenceNo(documentNo.nextStockNo());
+        tx.setOperatorId(operatorId);
+        tx.setCreatedAt(LocalDateTime.now());
+        transactions.insert(tx);
     }
 
     // ------------------------------------------------------------------ 申请单

@@ -2,6 +2,7 @@ package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.persistence.entity.InventoryTransactionEntity;
+import com.enterprise.procurement.persistence.entity.ProductEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseOrderEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseOrderItemEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseRequestEntity;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -208,5 +210,76 @@ class PurchaseBusinessServiceTest {
         // 2 + 3 合成一次 5，而不是两次调用（两次会撞 uk_inventory_tx_ref）
         verify(stock, times(1)).upsertAndAdd(1L, 5);
         verify(transactions, times(1)).insert(any(InventoryTransactionEntity.class));
+    }
+
+    // ---------------------------------------------------------------- 手工调整库存
+
+    @Test
+    @DisplayName("手工入库：走 upsert 累加，并写一条 IN 流水（带单号与操作人）")
+    void adjustInboundAddsStockAndWritesTransaction() {
+        when(catalog.product(1L)).thenReturn(new ProductEntity());
+        when(documentNo.nextStockNo()).thenReturn("ST20261030000001");
+
+        service.adjustStock(1L, 5, 9L);
+
+        verify(stock).upsertAndAdd(1L, 5);
+        ArgumentCaptor<InventoryTransactionEntity> captor = ArgumentCaptor.forClass(InventoryTransactionEntity.class);
+        verify(transactions).insert(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("IN");
+        assertThat(captor.getValue().getQuantity()).isEqualTo(5);
+        assertThat(captor.getValue().getReferenceNo()).isEqualTo("ST20261030000001");
+        assertThat(captor.getValue().getOperatorId()).isEqualTo(9L);
+    }
+
+    @Test
+    @DisplayName("手工出库：扣减成功写一条 OUT 流水，数量取绝对值")
+    void adjustOutboundDeductsAndWritesTransaction() {
+        when(catalog.product(1L)).thenReturn(new ProductEntity());
+        when(stock.deduct(1L, 3)).thenReturn(1);
+        when(documentNo.nextStockNo()).thenReturn("ST20261030000002");
+
+        service.adjustStock(1L, -3, 9L);
+
+        verify(stock).deduct(1L, 3);
+        verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
+        ArgumentCaptor<InventoryTransactionEntity> captor = ArgumentCaptor.forClass(InventoryTransactionEntity.class);
+        verify(transactions).insert(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("OUT");
+        assertThat(captor.getValue().getQuantity()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("出库扣不到（并发下抢输了/本来就不够）：抛库存不足，不写流水")
+    void adjustOutboundFailsWhenStockNotEnough() {
+        when(catalog.product(1L)).thenReturn(new ProductEntity());
+        when(stock.deduct(1L, 999)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.adjustStock(1L, -999, 9L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("库存不足");
+        verify(transactions, never()).insert(any(InventoryTransactionEntity.class));
+    }
+
+    @Test
+    @DisplayName("调整数量为 0 或 null：直接 400，连商品都不用查")
+    void adjustRejectsZeroOrNullQuantity() {
+        assertThatThrownBy(() -> service.adjustStock(1L, 0, 9L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不能为 0");
+        assertThatThrownBy(() -> service.adjustStock(1L, null, 9L))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
+        verify(stock, never()).deduct(anyLong(), anyInt());
+    }
+
+    @Test
+    @DisplayName("商品不存在或已停用：拒绝调整，避免给不存在的商品造库存")
+    void adjustRejectsUnknownProduct() {
+        when(catalog.product(404L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.adjustStock(404L, 1, 9L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("商品不存在");
+        verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
     }
 }

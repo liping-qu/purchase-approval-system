@@ -2,9 +2,13 @@ package com.enterprise.procurement.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.enterprise.procurement.persistence.entity.InventoryStockEntity;
+import com.enterprise.procurement.persistence.entity.InventoryStockRow;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.util.List;
 
 @Mapper
 public interface InventoryStockMapper extends BaseMapper<InventoryStockEntity> {
@@ -27,4 +31,34 @@ public interface InventoryStockMapper extends BaseMapper<InventoryStockEntity> {
     @Update("INSERT INTO inventory_stock (product_id, quantity, version) VALUES (#{productId}, #{quantity}, 0) "
             + "ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), version = version + 1")
     int upsertAndAdd(@Param("productId") Long productId, @Param("quantity") Integer quantity);
+
+    /**
+     * 出库：把"够不够扣"交给数据库判断，一条语句完成 检查 + 扣减。
+     *
+     * <p>为什么不是先 {@code selectById} 判断 {@code quantity >= n} 再 update：
+     * 两个并发出库会同时读到"够"，然后各自扣减，最终库存变成负数。
+     * 现在 {@code WHERE quantity >= n} 与扣减在同一个行锁里完成，
+     * 返回 0 就说明没扣到 —— 这一行是"抢输了"，业务层据此抛"库存不足"。</p>
+     */
+    @Update("UPDATE inventory_stock SET quantity = quantity - #{quantity}, version = version + 1 "
+            + "WHERE product_id = #{productId} AND quantity >= #{quantity}")
+    int deduct(@Param("productId") Long productId, @Param("quantity") Integer quantity);
+
+    /**
+     * 库存列表：库存表左连商品档案。
+     *
+     * <p>用 LEFT JOIN 而不是 INNER JOIN：商品万一被下架（active=0）甚至被物理删掉，
+     * 库存行仍然要看得见——看不见的库存比显示成"商品#12"更危险。</p>
+     */
+    @Select("SELECT s.product_id            AS product_id, "
+            + "       COALESCE(p.name, CONCAT('商品#', s.product_id)) AS product_name, "
+            + "       p.category              AS category, "
+            + "       p.unit                  AS unit, "
+            + "       s.quantity              AS quantity, "
+            + "       s.min_quantity          AS minimum_stock, "
+            + "       s.version               AS version, "
+            + "       s.updated_at            AS updated_at "
+            + "FROM inventory_stock s LEFT JOIN sys_product p ON p.id = s.product_id "
+            + "ORDER BY s.quantity ASC, s.product_id ASC")
+    List<InventoryStockRow> stockRows();
 }

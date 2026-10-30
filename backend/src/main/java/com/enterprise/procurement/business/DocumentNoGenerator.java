@@ -35,6 +35,7 @@ public class DocumentNoGenerator {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyyMMdd");
     private static final String SEQ_REQUEST = "REQUEST";
     private static final String SEQ_ORDER = "ORDER";
+    private static final String SEQ_STOCK = "STOCK";
 
     private final SequenceMapper sequences;
 
@@ -50,6 +51,18 @@ public class DocumentNoGenerator {
     @Transactional(propagation = Propagation.MANDATORY)
     public String nextOrderNo() {
         return next("PO", SEQ_ORDER);
+    }
+
+    /**
+     * 手工调整库存的单号（{@code ST20261030000001}）。
+     *
+     * <p>为什么要单号而不是直接用时间戳：库存流水上有
+     * {@code (reference_no, product_id, type)} 唯一键，时间戳在同一毫秒会撞；
+     * 而且仓库对账时要能按单号把一次调整的多个商品串起来。</p>
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public String nextStockNo() {
+        return next("ST", SEQ_STOCK);
     }
 
     private String next(String prefix, String name) {
