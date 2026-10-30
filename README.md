@@ -20,6 +20,9 @@ backend/src/main/java/com/enterprise/procurement
   aspect/         @OperationLog 操作日志
   resources/db/migration/  Flyway 版本化迁移脚本（唯一的表结构来源）
 frontend/src      Vue 页面、路由、状态与 API
+backend/pom.xml   后端唯一的 Maven 工程（根目录不再保留聚合 pom，避免两份定义漂移）
+backend/Dockerfile、frontend/Dockerfile   两个镜像各自的定义（根目录不再放 Dockerfile）
+frontend/nginx.conf  唯一一份 nginx 配置，docker-compose 直接挂载它
 ```
 
 ## 业务接口
@@ -40,8 +43,11 @@ frontend/src      Vue 页面、路由、状态与 API
 | `V2__align_legacy_schema.sql` | 存量库对齐：补齐历史脚本漏建的列/表，历史数据回填，幂等可重复执行 |
 | `V3__add_query_indexes.sql` | 查询索引（列表页、看板、流水页） |
 | `V4__seed_reference_data.sql` | 部门/角色/权限/菜单/演示账号/商品/供应商等参照数据 |
+| `V5__add_user_token_version.sql` | `sys_user.token_version`：改密/删用户后旧 JWT 立即失效 |
+| `V6__add_business_sequence_and_unique_keys.sql` | 单号序列表 + 业务唯一键（防并发撞号） |
+| `V7__extend_operation_log.sql` | 操作日志补 `operator_name`/`biz_id`/`cost_ms` 与追责索引 |
 
-- 全新空库：依次执行 V1→V4。
+- 全新空库：依次执行 V1→V7。
 - 存量库（已有表但没有 `flyway_schema_history`）：`baseline-on-migrate` 会把当前状态记为 V1 基线，只执行 V2 之后的增量，**不会 DROP 表或丢数据**。
 - 存量库首次迁移会打印一批 `Duplicate entry ...` 的 WARN，来源是 `INSERT IGNORE` 幂等种子写入命中已有行，属预期行为。
 - 迁移失败会直接中止启动，避免"半套结构"继续对外提供服务。
@@ -53,7 +59,7 @@ frontend/src      Vue 页面、路由、状态与 API
 需要 Docker Desktop 已启动。在 PowerShell 执行：
 
 ```powershell
-cd D:\purchase-approval-system
+cd <项目根目录>
 docker compose up -d --build
 ```
 
@@ -74,7 +80,7 @@ docker compose down
 后端需要 JDK 17+ 和 Maven。**必须先提供 `JWT_SECRET`**（至少 32 字节），项目不再提供内置默认密钥，未设置时启动会直接失败：
 
 ```powershell
-cd D:\purchase-approval-system\backend
+cd <项目根目录>\backend
 $env:JWT_SECRET = "local-dev-secret-0123456789-abcdefghijklmnop"
 mvn spring-boot:run
 ```
@@ -82,7 +88,7 @@ mvn spring-boot:run
 前端需要 Node.js 18+：
 
 ```powershell
-cd D:\purchase-approval-system\frontend
+cd <项目根目录>\frontend
 npm install
 npm run dev
 ```
