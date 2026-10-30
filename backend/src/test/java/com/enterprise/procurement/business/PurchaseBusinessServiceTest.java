@@ -1,11 +1,15 @@
 package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
+import com.enterprise.procurement.dto.PurchaseViewDtos;
 import com.enterprise.procurement.persistence.entity.InventoryTransactionEntity;
 import com.enterprise.procurement.persistence.entity.ProductEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseOrderEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseOrderItemEntity;
+import com.enterprise.procurement.persistence.entity.PurchaseOrderRow;
 import com.enterprise.procurement.persistence.entity.PurchaseRequestEntity;
+import com.enterprise.procurement.persistence.entity.PurchaseRequestItemEntity;
+import com.enterprise.procurement.persistence.entity.PurchaseRequestRow;
 import com.enterprise.procurement.persistence.entity.SystemUserRow;
 import com.enterprise.procurement.persistence.mapper.*;
 import org.junit.jupiter.api.DisplayName;
@@ -107,12 +111,12 @@ class PurchaseBusinessServiceTest {
     // ---------------------------------------------------------------- 待办
 
     @Test
-    @DisplayName("没有部门的负责人：待办为空，且不发出全表查询")
+    @DisplayName("没有部门的负责人：待办为空，且不发出任何待办查询")
     void pendingIsEmptyWhenNoDepartment() {
         user(5L, null, "MANAGER");
 
-        assertThat(service.pending("u5")).isEmpty();
-        verify(requests, never()).selectList(any());
+        assertThat(service.pending("u5", null)).isEmpty();
+        verify(requests, never()).pendingRows(any(), any());
     }
 
     // ---------------------------------------------------------------- 审批
@@ -281,5 +285,116 @@ class PurchaseBusinessServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("商品不存在");
         verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
+    }
+
+    // ---------------------------------------------------------------- 展示态契约
+
+    private PurchaseRequestRow row(long id, long applicantId, Long departmentId, String status) {
+        PurchaseRequestRow r = new PurchaseRequestRow();
+        r.setId(id);
+        r.setRequestNo("PR20261029000001");
+        r.setReason("采购开发设备");
+        r.setApplicant("张三");
+        r.setDepartment("技术部");
+        r.setAmount(new java.math.BigDecimal("45800.00"));
+        r.setStatus(status);
+        r.setCreateTime(java.time.LocalDateTime.of(2026, 10, 29, 21, 3));
+        r.setApplicantId(applicantId);
+        r.setDepartmentId(departmentId);
+        return r;
+    }
+
+    @Test
+    @DisplayName("详情：展示态带出申请人/部门姓名与明细，页面不再需要自己拼")
+    void detailCarriesNamesAndItems() {
+        user(1L, 1L, "EMPLOYEE");
+        when(requests.rowById(100L)).thenReturn(row(100L, 1L, 1L, "PENDING"));
+
+        PurchaseRequestItemEntity item = new PurchaseRequestItemEntity();
+        item.setId(9L);
+        item.setProductId(3L);
+        item.setProductName("Mac Mini");
+        item.setQuantity(2);
+        item.setUnitPrice(new java.math.BigDecimal("12000.00"));
+        item.setAmount(new java.math.BigDecimal("24000.00"));
+        when(requestItems.byRequest(100L)).thenReturn(List.of(item));
+
+        PurchaseViewDtos.RequestDetail detail = service.detail(100L, "u1");
+
+        assertThat(detail.applicant()).isEqualTo("张三");
+        assertThat(detail.department()).isEqualTo("技术部");
+        assertThat(detail.amount()).isEqualByComparingTo("45800.00");
+        assertThat(detail.items()).singleElement()
+                .satisfies(i -> assertThat(i.productName()).isEqualTo("Mac Mini"));
+    }
+
+    @Test
+    @DisplayName("详情：别人读不到，且不会去查明细（越权即短路）")
+    void detailRejectsNonOwnerWithoutTouchingItems() {
+        user(2L, 1L, "EMPLOYEE");
+        when(requests.rowById(100L)).thenReturn(row(100L, 1L, 1L, "PENDING"));
+
+        assertThatThrownBy(() -> service.detail(100L, "u2"))
+                .isInstanceOf(NoSuchElementException.class)
+                .hasMessage("采购申请不存在");
+        verify(requestItems, never()).byRequest(anyLong());
+    }
+
+    @Test
+    @DisplayName("订单列表：普通员工走带归属条件的查询，而不是拉全量再逐行点查")
+    void orderListUsesScopedQueryForEmployee() {
+        user(2L, 5L, "EMPLOYEE");
+        PurchaseOrderRow o = new PurchaseOrderRow();
+        o.setId(7L);
+        o.setOrderNo("PO20261029000001");
+        o.setRequestNo("PR20261029000001");
+        o.setSupplier("鼎盛办公");
+        o.setStatus("CREATED");
+        when(orders.rowsFor(2L, 5L)).thenReturn(List.of(o));
+
+        List<PurchaseViewDtos.OrderRow> rows = service.orderList("u2");
+
+        assertThat(rows).singleElement().satisfies(r -> {
+            assertThat(r.requestNo()).isEqualTo("PR20261029000001");
+            assertThat(r.supplier()).isEqualTo("鼎盛办公");
+        });
+        verify(orders, never()).rows();
+    }
+
+    @Test
+    @DisplayName("可下单申请：只返回审批通过且尚无订单的单据")
+    void orderableRequestsMapToViewRows() {
+        when(requests.orderableRows()).thenReturn(List.of(row(100L, 1L, 1L, "APPROVED")));
+
+        assertThat(service.orderableRequests()).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.id()).isEqualTo(100L);
+                    assertThat(r.status()).isEqualTo("APPROVED");
+                });
+    }
+
+    @Test
+    @DisplayName("订单入库后申请单同步走到 COMPLETED —— 否则完成率永远是 0")
+    void deliveredCompletesLinkedRequest() {
+        PurchaseOrderEntity o = new PurchaseOrderEntity();
+        o.setId(7L);
+        o.setOrderNo("PO20261029000001");
+        o.setRequestId(100L);
+        o.setVersion(1);
+        o.setStatus("CREATED");
+        when(orders.selectById(7L)).thenReturn(o);
+        when(orders.transition(7L, "CREATED", "DELIVERED", 1)).thenReturn(1);
+        when(orderItems.byOrder(7L)).thenReturn(List.of());
+
+        PurchaseRequestEntity r = new PurchaseRequestEntity();
+        r.setId(100L);
+        r.setStatus("PURCHASING");
+        r.setVersion(3);
+        when(requests.selectById(100L)).thenReturn(r);
+        when(requests.transition(100L, "PURCHASING", "COMPLETED", 3)).thenReturn(1);
+
+        service.delivered(7L, 5L);
+
+        verify(requests).transition(100L, "PURCHASING", "COMPLETED", 3);
     }
 }

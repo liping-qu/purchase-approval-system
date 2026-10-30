@@ -9,6 +9,12 @@ import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
 
+/**
+ * 采购申请。
+ *
+ * <p>读接口返回的是"展示态"（申请人姓名、部门名、金额、时间都已就绪），
+ * 不再是实体镜像——字段与前端表格同名，前端不做改名，也就没有"列全空白"的错位空间。</p>
+ */
 @RestController
 @RequestMapping("/api/purchase-requests")
 public class PurchaseRequestController {
@@ -19,15 +25,18 @@ public class PurchaseRequestController {
         this.service = service;
     }
 
+    /** 我的申请。{@code keyword} 匹配编号/事由/申请人，{@code status} 精确过滤。 */
     @GetMapping
-    public ApiResponse<?> list(Principal principal) {
-        return ApiResponse.ok(service.list(principal.getName()));
+    public ApiResponse<?> list(@RequestParam(required = false) String keyword,
+                               @RequestParam(required = false) String status,
+                               Principal principal) {
+        return ApiResponse.ok(service.list(principal.getName(), keyword, status));
     }
 
-    /** 详情。可见性由 service 判定，越权读取返回 404（不暴露记录是否存在）。 */
+    /** 详情（含明细）。可见性由 service 判定，越权读取返回 404（不暴露记录是否存在）。 */
     @GetMapping("/{id}")
     public ApiResponse<?> get(@PathVariable Long id, Principal principal) {
-        return ApiResponse.ok(service.get(id, principal.getName()));
+        return ApiResponse.ok(service.detail(id, principal.getName()));
     }
 
     @GetMapping("/{id}/items")

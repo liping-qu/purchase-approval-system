@@ -29,8 +29,8 @@ public class ApprovalController {
 
     @GetMapping("/pending")
     @PreAuthorize("hasAnyRole('ADMIN','MANAGER')")
-    public ApiResponse<?> pending(Principal principal) {
-        return ApiResponse.ok(service.pending(principal.getName()));
+    public ApiResponse<?> pending(@RequestParam(required = false) String keyword, Principal principal) {
+        return ApiResponse.ok(service.pending(principal.getName(), keyword));
     }
 
     @PostMapping("/{id}")

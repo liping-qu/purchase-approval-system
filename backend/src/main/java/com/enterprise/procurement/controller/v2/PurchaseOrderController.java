@@ -30,6 +30,19 @@ public class PurchaseOrderController {
         return ApiResponse.ok(service.createOrder(id, request.supplierId()));
     }
 
+    /**
+     * 可下单的申请：已审批通过、且还没有订单。
+     *
+     * <p>没有这个接口，"审批通过 → 采购下单"这一步在页面上是断的：采购员拿不到
+     * 可选的申请单 id，只能靠手输。放在这里而不是让前端遍历申请列表再比对订单，
+     * 是因为那需要客户端拉全量数据，分页一开就会漏。</p>
+     */
+    @GetMapping("/orderable")
+    @PreAuthorize("hasAnyRole('ADMIN','PURCHASER')")
+    public ApiResponse<?> orderable() {
+        return ApiResponse.ok(service.orderableRequests());
+    }
+
     /** 列表按角色裁剪：采购/仓库/管理员看全部，其他人只看与自己申请相关的。 */
     @GetMapping
     public ApiResponse<?> list(Principal principal) {
@@ -38,7 +51,7 @@ public class PurchaseOrderController {
 
     @GetMapping("/{id}")
     public ApiResponse<?> get(@PathVariable Long id, Principal principal) {
-        return ApiResponse.ok(service.getOrder(id, principal.getName()));
+        return ApiResponse.ok(service.orderDetail(id, principal.getName()));
     }
 
     @PostMapping("/{id}/delivered")

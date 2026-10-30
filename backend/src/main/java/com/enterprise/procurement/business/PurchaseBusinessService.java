@@ -1,7 +1,7 @@
 package com.enterprise.procurement.business;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
+import com.enterprise.procurement.dto.PurchaseViewDtos;
 import com.enterprise.procurement.model.Enums.ApplicationStatus;
 import com.enterprise.procurement.model.Enums.OrderStatus;
 import com.enterprise.procurement.persistence.entity.*;
@@ -91,21 +91,23 @@ public class PurchaseBusinessService {
      * <p>不可见时抛 404 而不是 403——403 等于告诉对方"这条记录确实存在"，
      * 仍然可以被用来枚举 id 区间。</p>
      */
-    private boolean canViewRequest(Viewer v, PurchaseRequestEntity r) {
+    private boolean canViewRequest(Viewer v, Long applicantId, Long departmentId, String status) {
         if (v.admin()) return true;
-        if (Objects.equals(v.id(), r.getApplicantId())) return true;
+        if (Objects.equals(v.id(), applicantId)) return true;
         if (v.has("MANAGER") && v.departmentId() != null
-                && Objects.equals(v.departmentId(), r.getDepartmentId())) return true;
-        return v.has("PURCHASER") && ORDERABLE_STATUSES.contains(r.getStatus());
+                && Objects.equals(v.departmentId(), departmentId)) return true;
+        return v.has("PURCHASER") && ORDERABLE_STATUSES.contains(status);
+    }
+
+    private boolean canViewRequest(Viewer v, PurchaseRequestEntity r) {
+        return canViewRequest(v, r.getApplicantId(), r.getDepartmentId(), r.getStatus());
     }
 
     private boolean canViewOrder(Viewer v, PurchaseOrderEntity o) {
         if (v.admin() || v.has("PURCHASER") || v.has("WAREHOUSE")) return true;
         PurchaseRequestEntity r = requests.selectById(o.getRequestId());
         if (r == null) return false;
-        if (Objects.equals(v.id(), r.getApplicantId())) return true;
-        return v.has("MANAGER") && v.departmentId() != null
-                && Objects.equals(v.departmentId(), r.getDepartmentId());
+        return canViewRequest(v, r);
     }
 
     // ------------------------------------------------------------------ 状态机
@@ -164,8 +166,37 @@ public class PurchaseBusinessService {
         return items(id);
     }
 
-    public List<PurchaseRequestEntity> list(String username) {
-        return requests.byApplicant(viewer(username).id());
+    /**
+     * 我的申请列表。
+     *
+     * <p>改造前只按 {@code applicantId} 查实体，前端发的 {@code keyword} / {@code status}
+     * 被完全忽略——用户输入关键词点"查询"，结果毫无变化。现在两个条件都下推到 SQL，
+     * 顺便把姓名/部门名用 JOIN 一次带出。</p>
+     */
+    public List<PurchaseViewDtos.RequestRow> list(String username, String keyword, String status) {
+        return requests.rows(viewer(username).id(), blankToNull(keyword), blankToNull(status))
+                .stream().map(PurchaseBusinessService::toRequestRow).toList();
+    }
+
+    /**
+     * 申请详情（含明细）。
+     *
+     * <p>顺序很重要：先取展示行，再用它身上的 applicantId/departmentId 做归属判断，
+     * 判不过就抛 404。这样既不为了鉴权多查一次实体，也不把"记录是否存在"泄露给越权方。</p>
+     */
+    public PurchaseViewDtos.RequestDetail detail(Long id, String username) {
+        PurchaseRequestRow row = requests.rowById(id);
+        if (row == null || !canViewRequest(viewer(username), row.getApplicantId(),
+                row.getDepartmentId(), row.getStatus())) {
+            throw new NoSuchElementException("采购申请不存在");
+        }
+        List<PurchaseViewDtos.ItemRow> detailItems = items(id).stream()
+                .map(i -> new PurchaseViewDtos.ItemRow(i.getId(), i.getProductId(), i.getProductName(),
+                        i.getQuantity(), i.getUnitPrice(), i.getAmount()))
+                .toList();
+        return new PurchaseViewDtos.RequestDetail(row.getId(), row.getRequestNo(), row.getReason(),
+                row.getApplicant(), row.getDepartment(), row.getAmount(), row.getStatus(),
+                row.getCreateTime(), detailItems);
     }
 
     /**
@@ -175,29 +206,69 @@ public class PurchaseBusinessService {
      * <b>条件整段不拼接</b>，于是返回全公司待审申请——一个"没填部门"的账号反而拿到了
      * 最大视野。正确语义是：没有部门就没有可审范围，返回空。</p>
      */
-    public List<PurchaseRequestEntity> pending(String username) {
+    public List<PurchaseViewDtos.RequestRow> pending(String username, String keyword) {
         Viewer v = viewer(username);
-        var q = Wrappers.<PurchaseRequestEntity>lambdaQuery()
-                .eq(PurchaseRequestEntity::getStatus, ApplicationStatus.PENDING.name());
+        String kw = blankToNull(keyword);
         if (v.admin()) {
-            return requests.selectList(q.orderByAsc(PurchaseRequestEntity::getCreatedAt));
+            return requests.pendingRows(null, kw).stream()
+                    .map(PurchaseBusinessService::toRequestRow).toList();
         }
         if (v.departmentId() == null) {
             return List.of();
         }
-        return requests.selectList(q.eq(PurchaseRequestEntity::getDepartmentId, v.departmentId())
-                .orderByAsc(PurchaseRequestEntity::getCreatedAt));
+        return requests.pendingRows(v.departmentId(), kw).stream()
+                .map(PurchaseBusinessService::toRequestRow).toList();
     }
 
-    public List<PurchaseOrderEntity> orderList(String username) {
+    /**
+     * 订单列表。
+     *
+     * <p>改造前对非特权角色是"查全量再逐行点查申请单"的 N+1，一条订单一次查询。
+     * 现在把归属条件下推到 SQL，一次扫描完成；供应商名称也由 JOIN 带出。</p>
+     */
+    public List<PurchaseViewDtos.OrderRow> orderList(String username) {
         Viewer v = viewer(username);
-        var all = orders.selectList(Wrappers.<PurchaseOrderEntity>lambdaQuery()
-                .orderByDesc(PurchaseOrderEntity::getCreatedAt));
-        if (v.admin() || v.has("PURCHASER") || v.has("WAREHOUSE")) return all;
-        return all.stream().filter(o -> canViewOrder(v, o)).toList();
+        List<PurchaseOrderRow> rows = (v.admin() || v.has("PURCHASER") || v.has("WAREHOUSE"))
+                ? orders.rows()
+                : orders.rowsFor(v.id(), v.departmentId());
+        return rows.stream().map(PurchaseBusinessService::toOrderRow).toList();
     }
 
-    public PurchaseOrderEntity getOrder(Long id, String username) {
+    public PurchaseViewDtos.OrderRow orderDetail(Long id, String username) {
+        PurchaseOrderEntity o = getOrder(id, username); // 归属判断，越权即 404
+        return toOrderRow(orders.rowById(o.getId()), o);
+    }
+
+    /** 可下单的申请：审批通过且尚未生成订单。采购下单页的下拉数据源。 */
+    public List<PurchaseViewDtos.RequestRow> orderableRequests() {
+        return requests.orderableRows().stream().map(PurchaseBusinessService::toRequestRow).toList();
+    }
+
+    private static PurchaseViewDtos.RequestRow toRequestRow(PurchaseRequestRow r) {
+        return new PurchaseViewDtos.RequestRow(r.getId(), r.getRequestNo(), r.getReason(),
+                r.getApplicant(), r.getDepartment(), r.getAmount(), r.getStatus(), r.getCreateTime());
+    }
+
+    private static PurchaseViewDtos.OrderRow toOrderRow(PurchaseOrderRow r) {
+        return new PurchaseViewDtos.OrderRow(r.getId(), r.getOrderNo(), r.getRequestId(), r.getRequestNo(),
+                r.getReason(), r.getSupplier(), r.getAmount(), r.getStatus(), r.getCreateTime());
+    }
+
+    /**
+     * JOIN 落空时退回实体字段（理论上不会发生，除非申请单被物理删除），
+     * 保证详情接口不会因为一次 LEFT JOIN 落空就返回 null。
+     */
+    private static PurchaseViewDtos.OrderRow toOrderRow(PurchaseOrderRow r, PurchaseOrderEntity o) {
+        if (r != null) return toOrderRow(r);
+        return new PurchaseViewDtos.OrderRow(o.getId(), o.getOrderNo(), o.getRequestId(), null, null,
+                null, o.getTotalAmount(), o.getStatus(), o.getCreatedAt());
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
+    }
+
+    private PurchaseOrderEntity getOrder(Long id, String username) {
         PurchaseOrderEntity o = orders.selectById(id);
         if (o == null) throw new NoSuchElementException("订单不存在");
         if (!canViewOrder(viewer(username), o)) throw new NoSuchElementException("订单不存在");
@@ -487,6 +558,16 @@ public class PurchaseBusinessService {
             tx.setOperatorId(operatorId);
             tx.setCreatedAt(LocalDateTime.now());
             transactions.insert(tx);
+        }
+
+        // 订单入库完成，申请单也要走到终态。
+        // 改造前这里断了一环：订单变 DELIVERED，申请却永远停在 PURCHASING，
+        // 于是"已完成"这个状态从来不会出现，工作台的完成率恒为 0。
+        // 顺序放在最后：库存与流水已经写好，这里失败会整笔回滚，不会留下"货入库了单没结"的半成品。
+        PurchaseRequestEntity r = requests.selectById(o.getRequestId());
+        if (r != null && ApplicationStatus.PURCHASING.name().equals(r.getStatus())) {
+            moveRequest(r.getId(), ApplicationStatus.PURCHASING, ApplicationStatus.COMPLETED,
+                    r.getVersion(), "申请状态已变更");
         }
         return orders.selectById(id);
     }
