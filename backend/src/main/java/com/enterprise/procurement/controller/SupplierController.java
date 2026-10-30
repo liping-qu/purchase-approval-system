@@ -47,6 +47,21 @@ public class SupplierController {
                 .orderByAsc("id")));
     }
 
+    /**
+     * 已停用供应商。
+     *
+     * <p>软删之后 {@code /list} 里就再也看不到它了，如果没有这个接口，
+     * "恢复"功能在 UI 上等于不存在——停用依然是不可逆的，只是从"改了 active 却仍显示"
+     * 变成了"看不见也找不回"。限管理员：看得到历史停用供应商属于管理能力。</p>
+     */
+    @GetMapping("/inactive")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResponse<?> inactive() {
+        return ApiResponse.ok(mapper.selectList(new QueryWrapper<SupplierEntity>()
+                .eq("active", 0)
+                .orderByAsc("id")));
+    }
+
     @PostMapping
     @PreAuthorize("hasAnyRole('ADMIN','PURCHASER')")
     public ApiResponse<?> create(@Valid @RequestBody SupplierForm form) {

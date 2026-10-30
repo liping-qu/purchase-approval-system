@@ -37,9 +37,11 @@ export const api = {
 
   products: () => request('get', '/products', null, () => mockApi.products?.() ?? []),
   suppliers: () => request('get', '/suppliers', null, () => mockApi.suppliers()),
+  inactiveSuppliers: () => request('get', '/suppliers/inactive', null, () => []),
   createSupplier: (payload) => request('post', '/suppliers', payload, () => mockApi.createSupplier(payload)),
   updateSupplier: (id, payload) => request('put', `/suppliers/${id}`, payload, () => mockApi.updateSupplier(id, payload)),
   deleteSupplier: (id) => request('delete', `/suppliers/${id}`, null, () => mockApi.deleteSupplier(id)),
+  restoreSupplier: (id) => request('post', `/suppliers/${id}/restore`, null, () => true),
 
   orders: () => request('get', '/purchase-orders', null, () => mockApi.orders()),
   orderableRequests: () => request('get', '/purchase-orders/orderable', null, () => mockApi.requests()),
@@ -48,6 +50,6 @@ export const api = {
 
   inventory: () => request('get', '/inventory/stock', null, () => mockApi.inventory()),
   adjustInventory: (productId, quantity) => request('post', `/inventory/${productId}/adjust`, { quantity }, () => mockApi.adjustInventory(productId, quantity)),
-  logs: () => request('get', '/admin/operation-logs', null, () => mockApi.logs()),
+  logs: (params) => request('get', '/admin/operation-logs', params, () => mockApi.logs()),
   users: () => request('get', '/users', null, () => mockApi.users())
 }
