@@ -2,6 +2,7 @@ package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.dto.PurchaseViewDtos;
+import com.enterprise.procurement.exception.ForbiddenException;
 import com.enterprise.procurement.exception.StateConflictException;
 import com.enterprise.procurement.persistence.entity.InventoryTransactionEntity;
 import com.enterprise.procurement.persistence.entity.ProductEntity;
@@ -141,7 +142,7 @@ class PurchaseBusinessServiceTest {
         request(100L, 3L, 1L, "PENDING");
 
         assertThatThrownBy(() -> service.approve(100L, "u3", new PurchaseRequestDtos.Approval("APPROVE", "ok")))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(ForbiddenException.class)
                 .hasMessage("不能审批本人提交的申请");
         verify(requests, never()).transition(anyLong(), anyString(), anyString(), anyInt());
     }
@@ -153,7 +154,7 @@ class PurchaseBusinessServiceTest {
         request(100L, 1L, 1L, "PENDING");
 
         assertThatThrownBy(() -> service.approve(100L, "u4", new PurchaseRequestDtos.Approval("APPROVE", "ok")))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(ForbiddenException.class)
                 .hasMessage("仅本部门负责人可审批");
     }
 
@@ -170,7 +171,7 @@ class PurchaseBusinessServiceTest {
         when(requests.selectById(100L)).thenReturn(r);
 
         assertThatThrownBy(() -> service.approve(100L, "u6", new PurchaseRequestDtos.Approval("APPROVE", "ok")))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(ForbiddenException.class);
     }
 
     @Test
@@ -255,11 +256,40 @@ class PurchaseBusinessServiceTest {
         }).when(requests).insert(any(PurchaseRequestEntity.class));
 
         var dto = new PurchaseRequestDtos.Create("买打印纸",
-                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))));
+                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))), false);
         PurchaseRequestEntity created = service.createDraft("u1", dto, "key-abc-123");
 
         assertThat(created.getId()).isEqualTo(500L);
         verify(idempotency).complete("key-abc-123", 1L, 500L);
+    }
+
+    @Test
+    @DisplayName("建单即提交：一次请求完成 DRAFT→PENDING，不再有第二跳失败留孤儿草稿的窗口")
+    void createDraftWithSubmitTransitionsInSameCall() {
+        user(1L, 1L, "EMPLOYEE");
+        ProductEntity p = new ProductEntity();
+        p.setId(1L);
+        p.setName("A4 纸");
+        when(catalog.product(1L)).thenReturn(p);
+        when(documentNo.nextRequestNo()).thenReturn("PR20261106000002");
+        when(requests.updateDraftFields(anyLong(), eq(1L), anyString(), any())).thenReturn(1);
+        doAnswer(inv -> {
+            ((PurchaseRequestEntity) inv.getArgument(0)).setId(501L);
+            return 1;
+        }).when(requests).insert(any(PurchaseRequestEntity.class));
+        when(requests.transition(501L, "DRAFT", "PENDING", 0)).thenReturn(1);
+        PurchaseRequestEntity afterSubmit = new PurchaseRequestEntity();
+        afterSubmit.setId(501L);
+        afterSubmit.setStatus("PENDING");
+        afterSubmit.setVersion(1);
+        when(requests.selectById(501L)).thenReturn(afterSubmit);
+
+        var dto = new PurchaseRequestDtos.Create("立即提交",
+                List.of(new PurchaseRequestDtos.Item(1L, 1, new java.math.BigDecimal("3.00"))), true);
+        PurchaseRequestEntity created = service.createDraft("u1", dto, null);
+
+        assertThat(created.getStatus()).isEqualTo("PENDING");
+        verify(requests).transition(501L, "DRAFT", "PENDING", 0);
     }
 
     @Test
@@ -274,7 +304,7 @@ class PurchaseBusinessServiceTest {
         when(requests.selectById(500L)).thenReturn(existing);
 
         var dto = new PurchaseRequestDtos.Create("买打印纸",
-                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))));
+                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))), false);
         PurchaseRequestEntity got = service.createDraft("u1", dto, "key-abc-123");
 
         assertThat(got.getId()).isEqualTo(500L);

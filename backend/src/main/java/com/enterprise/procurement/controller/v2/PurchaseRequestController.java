@@ -49,7 +49,10 @@ public class PurchaseRequestController {
     public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.Create dto,
                                  @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
                                  Principal principal) {
-        return ApiResponse.ok("草稿已创建", service.createDraft(principal.getName(), dto, idemKey));
+        var created = service.createDraft(principal.getName(), dto, idemKey);
+        // submit=true 时事务里已经提交，提示语必须跟着状态走，否则用户以为只是存了草稿
+        boolean submitted = "PENDING".equals(created.getStatus());
+        return ApiResponse.ok(submitted ? "已提交，等待审批" : "草稿已创建", created);
     }
 
     @PutMapping("/{id}")

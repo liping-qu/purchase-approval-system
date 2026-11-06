@@ -1,6 +1,7 @@
 package com.enterprise.procurement.config;
 
 import com.enterprise.procurement.dto.ApiResponse;
+import com.enterprise.procurement.exception.ErrorCode;
 import com.enterprise.procurement.security.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletResponse;
@@ -39,16 +40,19 @@ public class SecurityConfig {
                 // 未认证 / 已认证但无权限，都回统一的 JSON 信封，
                 // 否则前端拿到的是空响应体的 403，无法把原因展示给用户。
                 .exceptionHandling(e -> e
-                        .authenticationEntryPoint((req, res, ex) -> writeError(res, json, 401, "未登录或登录已过期"))
-                        .accessDeniedHandler((req, res, ex) -> writeError(res, json, 403, "无权访问该资源")))
+                        .authenticationEntryPoint((req, res, ex) ->
+                                writeError(res, json, ErrorCode.AUTH_REQUIRED, "未登录或登录已过期"))
+                        .accessDeniedHandler((req, res, ex) ->
+                                writeError(res, json, ErrorCode.FORBIDDEN, "无权访问该资源")))
                 .addFilterBefore(jwt, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
 
-    private static void writeError(HttpServletResponse res, ObjectMapper json, int status, String message)
+    private static void writeError(HttpServletResponse res, ObjectMapper json, ErrorCode errorCode, String message)
             throws IOException {
-        res.setStatus(status);
+        // 状态码与错误码都来自枚举：401/403 的响应体也能被前端按 code 稳定识别
+        res.setStatus(errorCode.status().value());
         res.setContentType("application/json;charset=UTF-8");
-        json.writeValue(res.getWriter(), ApiResponse.fail(message));
+        json.writeValue(res.getWriter(), ApiResponse.fail(errorCode, message));
     }
 }

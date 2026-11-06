@@ -177,11 +177,14 @@ async function save(submitAfterCreate) {
     // 后端只认 productId：商品名称是下单时的快照，由服务端按 id 回填，
     // 客户端传名称没有任何意义（也无法校验它跟 id 是否对得上）。
     // 带幂等键：超时重试 / 连点两次不会变成两张草稿，第二次会直接拿回第一张
+    // submit=true 让后端在同一事务里建单并提交，不再分两跳
     const created = await api.createRequest({
       reason: form.reason,
-      items: form.items.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice }))
+      items: form.items.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice })),
+      submit: submitAfterCreate
     }, idemKey.value)
-    if (submitAfterCreate) {
+    // 后端已原子提交；只有忽略 submit 字段的旧版本才会返回 DRAFT，此时补一次提交
+    if (submitAfterCreate && created?.status === 'DRAFT') {
       if (!created?.id) throw new Error('草稿已保存，但未拿到单据编号，无法自动提交')
       await api.submitRequest(created.id)
     }

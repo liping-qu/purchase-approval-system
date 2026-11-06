@@ -13,9 +13,14 @@ package com.enterprise.procurement.exception;
  * 前端和监控把"被人抢先"误读成"请求不合法"。正确语义是 <b>409 Conflict</b>：
  * 告诉客户端"你基于的是旧状态，刷新后重试或放弃"，而不是"你的请求格式有问题"。</p>
  */
-public class StateConflictException extends RuntimeException {
+public class StateConflictException extends BusinessException {
 
     public StateConflictException(String message) {
-        super(message);
+        super(ErrorCode.STATE_CONFLICT, message);
+    }
+
+    /** 用于更精确的冲突码（订单已入库、申请已下单、库存不足、幂等冲突）。 */
+    public StateConflictException(ErrorCode code, String message) {
+        super(code, message);
     }
 }

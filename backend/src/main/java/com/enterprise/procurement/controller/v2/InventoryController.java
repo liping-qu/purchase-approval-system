@@ -4,6 +4,7 @@ import com.enterprise.procurement.aspect.OperationLog;
 import com.enterprise.procurement.business.PurchaseBusinessService;
 import com.enterprise.procurement.dto.ApiResponse;
 import com.enterprise.procurement.dto.InventoryDtos;
+import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -48,7 +49,7 @@ public class InventoryController {
     @PreAuthorize("hasAnyRole('ADMIN','WAREHOUSE')")
     @OperationLog(value = "手工调整库存", module = "库存")
     public ApiResponse<?> adjust(@PathVariable Long productId,
-                                 @RequestBody(required = false) InventoryDtos.Adjust body,
+                                 @Valid @RequestBody(required = false) InventoryDtos.Adjust body,
                                  @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
                                  Principal principal) {
         Integer quantity = body == null ? null : body.quantity();

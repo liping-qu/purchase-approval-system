@@ -61,6 +61,7 @@ class ExceptionContractTest {
                         .content("{\"reason\":\"\",\"quantity\":0}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.message").value("参数校验失败"))
                 .andExpect(jsonPath("$.data.reason").exists())
                 .andExpect(jsonPath("$.data.quantity").exists())
@@ -81,8 +82,18 @@ class ExceptionContractTest {
         mvc.perform(get("/conflict"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("STATE_CONFLICT"))
                 .andExpect(jsonPath("$.message").value("申请状态已变更，请刷新后重试"))
                 .andExpect(jsonPath("$.traceId").value(TRACE_ID));
+    }
+
+    @Test
+    @DisplayName("无权限返回 403 —— 原来和参数错误一样是 400，前端无法区分改输入还是找管理员")
+    void forbiddenIs403() throws Exception {
+        mvc.perform(get("/forbidden"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.message").value("仅草稿本人可编辑"));
     }
 
     @Test
@@ -90,6 +101,7 @@ class ExceptionContractTest {
     void missingResourceIs404() throws Exception {
         mvc.perform(get("/missing"))
                 .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.message").value("采购申请不存在"));
     }
 
@@ -113,6 +125,7 @@ class ExceptionContractTest {
     void unexpectedErrorCarriesTraceId() throws Exception {
         mvc.perform(get("/boom"))
                 .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
                 .andExpect(jsonPath("$.message").value("服务器内部错误（traceId=" + TRACE_ID + "）"))
                 .andExpect(jsonPath("$.traceId").value(TRACE_ID));
     }
@@ -123,7 +136,19 @@ class ExceptionContractTest {
         mvc.perform(get("/ok"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.traceId").value(TRACE_ID));
+    }
+
+    @Test
+    @DisplayName("信封字段顺序固定：traceId 必须在最后（前端按位置解析的兼容性依赖它）")
+    void traceIdStaysLastInJson() throws Exception {
+        String body = mvc.perform(get("/ok"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertTrue(body.indexOf("\"traceId\"") > body.indexOf("\"data\""), "traceId 不应出现在 data 之前: " + body);
+        assertTrue(body.indexOf("\"code\"") > 0 && body.indexOf("\"code\"") < body.indexOf("\"message\""),
+                "code 应在 message 之前: " + body);
     }
 
     @Test
@@ -166,6 +191,11 @@ class ExceptionContractTest {
         @GetMapping("/bad-argument")
         ApiResponse<String> badArgument() {
             throw new IllegalArgumentException("action 必须为 APPROVE 或 REJECT");
+        }
+
+        @GetMapping("/forbidden")
+        ApiResponse<String> forbidden() {
+            throw new ForbiddenException("仅草稿本人可编辑");
         }
 
         @GetMapping("/missing")

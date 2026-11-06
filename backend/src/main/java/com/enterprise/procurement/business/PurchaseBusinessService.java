@@ -2,6 +2,8 @@ package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.dto.PurchaseViewDtos;
+import com.enterprise.procurement.exception.ErrorCode;
+import com.enterprise.procurement.exception.ForbiddenException;
 import com.enterprise.procurement.exception.StateConflictException;
 import com.enterprise.procurement.model.Enums.ApplicationStatus;
 import com.enterprise.procurement.model.Enums.OrderStatus;
@@ -332,7 +334,7 @@ public class PurchaseBusinessService {
             stock.upsertAndAdd(productId, quantity);
         } else if (stock.deduct(productId, -quantity) == 0) {
             // 并发下抢输了或本来就不够——都是"当前状态不允许"，409 而不是 400
-            throw new StateConflictException("库存不足，无法出库");
+            throw new StateConflictException(ErrorCode.STOCK_INSUFFICIENT, "库存不足，无法出库");
         }
 
         InventoryTransactionEntity tx = new InventoryTransactionEntity();
@@ -393,6 +395,18 @@ public class PurchaseBusinessService {
             throw new StateConflictException("草稿创建失败，请重试");
         }
         r.setTotalAmount(total);
+
+        if (Boolean.TRUE.equals(dto.submit())) {
+            // 建单与提交在同一个事务里完成。
+            // 改造前前端是"POST 建草稿 → POST 提交"两跳，第二跳失败（网络断开/服务重启）
+            // 就会留下一张"用户以为已提交、实际还是草稿"的孤儿单，而且用户不会知道。
+            // 现在要么全成、要么全不成，重试时幂等键还能把已建的单原样还回来。
+            moveRequest(r.getId(), ApplicationStatus.DRAFT, ApplicationStatus.PENDING,
+                    r.getVersion(), "申请状态已变更");
+            idempotency.complete(idemKey, v.id(), r.getId());
+            return requireRequest(r.getId());
+        }
+
         idempotency.complete(idemKey, v.id(), r.getId());
         return r;
     }
@@ -453,7 +467,7 @@ public class PurchaseBusinessService {
     public PurchaseRequestEntity updateDraft(Long id, String username, PurchaseRequestDtos.Update dto) {
         Viewer v = viewer(username);
         PurchaseRequestEntity r = requireRequest(id);
-        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("仅草稿本人可编辑");
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new ForbiddenException("仅草稿本人可编辑");
         if (!ApplicationStatus.DRAFT.name().equals(r.getStatus())) throw new IllegalStateException("仅草稿状态可编辑");
 
         requestItems.deleteByRequest(id);
@@ -473,7 +487,7 @@ public class PurchaseBusinessService {
     public void deleteDraft(Long id, String username) {
         Viewer v = viewer(username);
         PurchaseRequestEntity r = requireRequest(id);
-        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("仅草稿本人可删除");
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new ForbiddenException("仅草稿本人可删除");
         // 条件删除：只有仍是 DRAFT 才删得动；明细/审批记录靠 ON DELETE CASCADE 一并清理。
         // 改造前先读后判再无条件 DELETE——读与删之间单据被提交，仍会被连审批记录一起删掉。
         if (requests.deleteDraftRow(id, v.id()) != 1) {
@@ -485,7 +499,7 @@ public class PurchaseBusinessService {
     public PurchaseRequestEntity submit(Long id, String username) {
         PurchaseRequestEntity r = requireRequest(id);
         Viewer v = viewer(username);
-        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("无权提交");
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new ForbiddenException("无权提交");
         if (ApplicationStatus.PENDING.name().equals(r.getStatus())) {
             // 幂等成功：只有提交能把 DRAFT 变成 PENDING，所以"已是 PENDING 且是本人"
             // 只可能是上一次提交已经成功（网络超时重试 / 连点两次）。
@@ -499,7 +513,7 @@ public class PurchaseBusinessService {
     @Transactional
     public PurchaseRequestEntity withdraw(Long id, String username) {
         PurchaseRequestEntity r = requireRequest(id);
-        if (!r.getApplicantId().equals(viewer(username).id())) throw new IllegalStateException("无权撤回");
+        if (!r.getApplicantId().equals(viewer(username).id())) throw new ForbiddenException("无权撤回");
         moveRequest(id, ApplicationStatus.PENDING, ApplicationStatus.DRAFT, r.getVersion(), "仅待审批申请可撤回");
         return requireRequest(id);
     }
@@ -524,12 +538,12 @@ public class PurchaseBusinessService {
         Viewer v = viewer(username);
 
         if (Objects.equals(r.getApplicantId(), v.id())) {
-            throw new IllegalStateException("不能审批本人提交的申请");
+            throw new ForbiddenException("不能审批本人提交的申请");
         }
         if (!v.admin()) {
             if (v.departmentId() == null || r.getDepartmentId() == null
                     || !Objects.equals(v.departmentId(), r.getDepartmentId())) {
-                throw new IllegalStateException("仅本部门负责人可审批");
+                throw new ForbiddenException("仅本部门负责人可审批");
             }
         }
 
@@ -589,7 +603,7 @@ public class PurchaseBusinessService {
         } catch (DuplicateKeyException e) {
             // 并发下单时，第二个事务会卡在 uk_order_request 上，等第一个提交后拿到重复键错误。
             // 这属于"业务上不该重复"的正常竞态结果，翻译成 409 而不是让 500 冒出来。
-            throw new StateConflictException("该采购申请已生成订单，请勿重复下单");
+            throw new StateConflictException(ErrorCode.REQUEST_ALREADY_ORDERED, "该采购申请已生成订单，请勿重复下单");
         }
 
         for (PurchaseRequestItemEntity ri : items(requestId)) {
@@ -627,7 +641,7 @@ public class PurchaseBusinessService {
         PurchaseOrderEntity o = orders.selectById(id);
         if (o == null) throw new NoSuchElementException("订单不存在");
         if (OrderStatus.DELIVERED.name().equals(o.getStatus())) {
-            throw new StateConflictException("订单已入库，请勿重复操作");
+            throw new StateConflictException(ErrorCode.ORDER_ALREADY_DELIVERED, "订单已入库，请勿重复操作");
         }
 
         moveOrder(id, OrderStatus.CREATED, OrderStatus.DELIVERED, o.getVersion(), "订单已被他人处理，请刷新后重试");

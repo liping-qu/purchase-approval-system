@@ -1,5 +1,9 @@
 package com.enterprise.procurement.dto;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+
 /**
  * 库存相关的请求体。
  *
@@ -12,7 +16,17 @@ public final class InventoryDtos {
     private InventoryDtos() {
     }
 
-    /** 手工调整：正数入库、负数出库；0 没有语义，服务端直接拒绝。 */
-    public record Adjust(Integer quantity) {
+    /**
+     * 手工调整：正数入库、负数出库；0 没有语义（服务端拒绝）。
+     *
+     * <p>{@code @NotNull} 让"忘记传数量"在参数绑定阶段就是 400 而不是走到
+     * service 里空指针；上下限挡住 {@code Integer.MIN_VALUE} 这种一看就不是
+     * 人手输入的值——它会让 {@code -quantity} 溢出成负数，最终扣减逻辑反向。</p>
+     */
+    public record Adjust(
+            @NotNull(message = "请填写调整数量")
+            @Min(value = -99999, message = "单次调整不能超过 99999")
+            @Max(value = 99999, message = "单次调整不能超过 99999")
+            Integer quantity) {
     }
 }

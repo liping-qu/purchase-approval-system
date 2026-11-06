@@ -48,41 +48,40 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(NoSuchElementException.class)
     ResponseEntity<ApiResponse<Void>> notFound(Exception e) {
-        return build(HttpStatus.NOT_FOUND, e.getMessage());
+        return build(ErrorCode.NOT_FOUND, e.getMessage());
     }
 
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ApiResponse<Void>> forbidden(AccessDeniedException e) {
-        return build(HttpStatus.FORBIDDEN, "无权访问该资源");
+        return build(ErrorCode.FORBIDDEN, "无权访问该资源");
+    }
+
+    /**
+     * 所有带错误码的业务异常：状态与码都由 {@link ErrorCode} 决定。
+     *
+     * <p>加这个处理器之后，"新增一种失败场景"= 加一个枚举值，
+     * 而不是在 advice 里再加一个方法——错误码与 HTTP 状态不会再各自漂移。</p>
+     */
+    @ExceptionHandler(BusinessException.class)
+    ResponseEntity<ApiResponse<Void>> business(BusinessException e) {
+        return build(e.errorCode(), e.getMessage());
     }
 
     @ExceptionHandler({IllegalArgumentException.class, IllegalStateException.class})
     ResponseEntity<ApiResponse<Void>> badRequest(Exception e) {
-        return build(HttpStatus.BAD_REQUEST, e.getMessage());
-    }
-
-    /**
-     * 并发/状态冲突。
-     *
-     * <p>改造前这类失败抛 {@code IllegalStateException} 落到上面的 400：
-     * "两个人同时审批，慢的那个"和"参数写错了"用同一个状态码，前端无法区分
-     * "刷新重试"和"修改请求"。CAS 冲突的正确语义是 409 —— 请求没坏，只是基于旧状态。</p>
-     */
-    @ExceptionHandler(StateConflictException.class)
-    ResponseEntity<ApiResponse<Void>> stateConflict(StateConflictException e) {
-        return build(HttpStatus.CONFLICT, e.getMessage());
+        return build(ErrorCode.BAD_REQUEST, e.getMessage());
     }
 
     /**
      * 唯一键冲突兜底。
      *
-     * <p>业务的幂等冲突大多已在 service 里翻译成具体提示（例如"该采购申请已生成订单"）。
+     * <p>业务的幂等冲突大多已在 service 里翻译成具体错误码（例如 {@code REQUEST_ALREADY_ORDERED}）。
      * 这里是最后一层：万一还有没预料到的唯一键冲突，返回 409 而不是 500——
      * 500 会让前端和监控把"用户重复提交"误判成"服务端故障"。</p>
      */
     @ExceptionHandler(DuplicateKeyException.class)
     ResponseEntity<ApiResponse<Void>> duplicateKey(DuplicateKeyException e) {
-        return build(HttpStatus.CONFLICT, "数据已存在，请勿重复提交");
+        return build(ErrorCode.DUPLICATE_KEY, "数据已存在，请勿重复提交");
     }
 
     // ---------------------------------------------------------------- 4xx 参数
@@ -98,7 +97,7 @@ public class GlobalExceptionHandler {
             errors.putIfAbsent(fe.getField(), fe.getDefaultMessage());
         }
         return ResponseEntity.badRequest()
-                .body(new ApiResponse<>(false, "参数校验失败", errors, TraceContext.current()));
+                .body(ApiResponse.fail(ErrorCode.VALIDATION_FAILED, "参数校验失败", errors));
     }
 
     /** {@code @RequestParam} / {@code @PathVariable} 上的约束失败。 */
@@ -108,22 +107,22 @@ public class GlobalExceptionHandler {
         e.getConstraintViolations().forEach(v ->
                 errors.putIfAbsent(v.getPropertyPath().toString(), v.getMessage()));
         return ResponseEntity.badRequest()
-                .body(new ApiResponse<>(false, "参数校验失败", errors, TraceContext.current()));
+                .body(ApiResponse.fail(ErrorCode.VALIDATION_FAILED, "参数校验失败", errors));
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     ResponseEntity<ApiResponse<Void>> missingParam(MissingServletRequestParameterException e) {
-        return build(HttpStatus.BAD_REQUEST, "缺少必要参数: " + e.getParameterName());
+        return build(ErrorCode.BAD_REQUEST, "缺少必要参数: " + e.getParameterName());
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<ApiResponse<Void>> typeMismatch(MethodArgumentTypeMismatchException e) {
-        return build(HttpStatus.BAD_REQUEST, "参数类型不正确: " + e.getName());
+        return build(ErrorCode.BAD_REQUEST, "参数类型不正确: " + e.getName());
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ApiResponse<Void>> unreadableBody(HttpMessageNotReadableException e) {
-        return build(HttpStatus.BAD_REQUEST, "请求体格式错误，请检查 JSON 结构与字段类型");
+        return build(ErrorCode.BAD_REQUEST, "请求体格式错误，请检查 JSON 结构与字段类型");
     }
 
     // ---------------------------------------------------------------- 4xx 路由
@@ -131,7 +130,7 @@ public class GlobalExceptionHandler {
     /** 请求了不存在的接口。改造前这类请求同样返回 500。 */
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
     ResponseEntity<ApiResponse<Void>> noHandler(Exception e) {
-        return build(HttpStatus.NOT_FOUND, "接口不存在");
+        return build(ErrorCode.NOT_FOUND, "接口不存在");
     }
 
     // ---------------------------------------------------------------- 5xx
@@ -146,12 +145,12 @@ public class GlobalExceptionHandler {
         // message 里带 traceId：用户截图后，运维 grep 这一个 id 就能拿到完整调用日志
         String message = id == null ? "服务器内部错误" : "服务器内部错误（traceId=" + id + "）";
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ApiResponse<>(false, message, null, id));
+                .body(new ApiResponse<>(false, ErrorCode.INTERNAL_ERROR.code(), message, null, id));
     }
 
     // ---------------------------------------------------------------- 内部
 
-    private ResponseEntity<ApiResponse<Void>> build(HttpStatus status, String message) {
-        return ResponseEntity.status(status).body(ApiResponse.fail(message));
+    private ResponseEntity<ApiResponse<Void>> build(ErrorCode errorCode, String message) {
+        return ResponseEntity.status(errorCode.status()).body(ApiResponse.fail(errorCode, message));
     }
 }
