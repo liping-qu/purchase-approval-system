@@ -68,11 +68,21 @@ class ExceptionContractTest {
     }
 
     @Test
-    @DisplayName("业务冲突返回 400，文案可直接展示")
-    void businessConflictIs400() throws Exception {
-        mvc.perform(get("/conflict"))
+    @DisplayName("参数/调用顺序错误返回 400，文案可直接展示")
+    void badArgumentIs400() throws Exception {
+        mvc.perform(get("/bad-argument"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("申请状态已变更"));
+                .andExpect(jsonPath("$.message").value("action 必须为 APPROVE 或 REJECT"));
+    }
+
+    @Test
+    @DisplayName("并发/状态冲突返回 409，与 400 区分（原来也是 400，前端无法提示刷新重试）")
+    void stateConflictIs409() throws Exception {
+        mvc.perform(get("/conflict"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("申请状态已变更，请刷新后重试"))
+                .andExpect(jsonPath("$.traceId").value(TRACE_ID));
     }
 
     @Test
@@ -150,7 +160,12 @@ class ExceptionContractTest {
 
         @GetMapping("/conflict")
         ApiResponse<String> conflict() {
-            throw new IllegalStateException("申请状态已变更");
+            throw new StateConflictException("申请状态已变更，请刷新后重试");
+        }
+
+        @GetMapping("/bad-argument")
+        ApiResponse<String> badArgument() {
+            throw new IllegalArgumentException("action 必须为 APPROVE 或 REJECT");
         }
 
         @GetMapping("/missing")

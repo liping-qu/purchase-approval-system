@@ -2,6 +2,7 @@ package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.dto.PurchaseViewDtos;
+import com.enterprise.procurement.exception.StateConflictException;
 import com.enterprise.procurement.persistence.entity.InventoryTransactionEntity;
 import com.enterprise.procurement.persistence.entity.ProductEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseOrderEntity;
@@ -15,9 +16,10 @@ import com.enterprise.procurement.persistence.mapper.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -161,33 +163,113 @@ class PurchaseBusinessServiceTest {
     }
 
     @Test
-    @DisplayName("CAS 影响行数为 0（并发下已被他人处理）时报状态已变更")
+    @DisplayName("CAS 影响行数为 0（并发下已被他人处理）→ 409 冲突，而不是 400 参数错")
     void approveConflictWhenCasMisses() {
         user(3L, 1L, "MANAGER");
         request(100L, 1L, 1L, "PENDING");
         when(requests.transition(100L, "PENDING", "APPROVED", 2)).thenReturn(0);
 
         assertThatThrownBy(() -> service.approve(100L, "u3", new PurchaseRequestDtos.Approval("APPROVE", "ok")))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(StateConflictException.class)
                 .hasMessage("申请状态已变更");
+    }
+
+    // ---------------------------------------------------------------- 草稿竞态
+
+    @Test
+    @DisplayName("编辑期间被并发提交：条件更新 0 行 → 冲突，绝不用 updateById 把状态写回去")
+    void updateDraftLosesRaceToSubmit() {
+        user(1L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "DRAFT"); // 读到 DRAFT，但提交发生在读与写之间
+        when(catalog.product(1L)).thenReturn(new ProductEntity());
+        when(requests.updateDraftFields(eq(100L), eq(1L), eq("改后的理由"), any())).thenReturn(0);
+
+        var dto = new PurchaseRequestDtos.Update("改后的理由",
+                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.50"))));
+        assertThatThrownBy(() -> service.updateDraft(100L, "u1", dto))
+                .isInstanceOf(StateConflictException.class)
+                .hasMessageContaining("审批流程");
+        // 关键回归点：全字段覆盖的旧路径必须死掉，否则 PENDING 会被写回 DRAFT
+        verify(requests, never()).updateById(any(PurchaseRequestEntity.class));
+    }
+
+    @Test
+    @DisplayName("编辑草稿成功：明细重写并归并，总额走条件更新落库")
+    void updateDraftRewritesItemsAndTotal() {
+        user(1L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "DRAFT");
+        ProductEntity p = new ProductEntity();
+        p.setId(1L);
+        p.setName("A4 纸");
+        when(catalog.product(1L)).thenReturn(p);
+        when(requests.updateDraftFields(eq(100L), eq(1L), eq("新理由"), any())).thenReturn(1);
+
+        var dto = new PurchaseRequestDtos.Update("新理由", List.of(
+                new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.50")),
+                new PurchaseRequestDtos.Item(1L, 3, new java.math.BigDecimal("3.50"))));
+        service.updateDraft(100L, "u1", dto);
+
+        verify(requestItems).deleteByRequest(100L);
+        ArgumentCaptor<PurchaseRequestItemEntity> captor = ArgumentCaptor.forClass(PurchaseRequestItemEntity.class);
+        verify(requestItems, times(1)).insert(captor.capture()); // 两行同商品归并成一行
+        assertThat(captor.getValue().getQuantity()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("删除草稿：已不是 DRAFT 时条件删除 0 行 → 冲突，不执行无条件 DELETE")
+    void deleteDraftOnlyWhenStillDraft() {
+        user(1L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "DRAFT");
+        when(requests.deleteDraftRow(100L, 1L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.deleteDraft(100L, "u1"))
+                .isInstanceOf(StateConflictException.class)
+                .hasMessageContaining("审批流程");
+        verify(requests, never()).deleteById(anyLong());
     }
 
     // ---------------------------------------------------------------- 入库
 
     @Test
-    @DisplayName("重复入库：状态流转失败即拒绝，不会去动库存")
+    @DisplayName("重复入库：前置状态检查即拒绝，不会去动库存")
     void deliveredConflictDoesNotTouchStock() {
         PurchaseOrderEntity o = new PurchaseOrderEntity();
         o.setId(7L);
         o.setVersion(1);
         o.setStatus("DELIVERED");
         when(orders.selectById(7L)).thenReturn(o);
-        when(orders.transition(7L, "CREATED", "DELIVERED", 1)).thenReturn(0);
 
         assertThatThrownBy(() -> service.delivered(7L, 5L))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("订单已处理");
+                .isInstanceOf(StateConflictException.class)
+                .hasMessage("订单已入库，请勿重复操作");
         verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
+        verify(orders, never()).transition(anyLong(), anyString(), anyString(), anyInt());
+    }
+
+    @Test
+    @DisplayName("多商品入库按商品号升序加锁：交叉订单不会互持行锁导致死锁")
+    void deliveredLocksProductRowsInAscendingOrder() {
+        PurchaseOrderEntity o = new PurchaseOrderEntity();
+        o.setId(7L);
+        o.setOrderNo("PO20261029000001");
+        o.setVersion(1);
+        o.setStatus("CREATED");
+        when(orders.selectById(7L)).thenReturn(o);
+        when(orders.transition(7L, "CREATED", "DELIVERED", 1)).thenReturn(1);
+
+        PurchaseOrderItemEntity big = new PurchaseOrderItemEntity();   // 明细顺序故意倒着放
+        big.setProductId(9L);
+        big.setQuantity(1);
+        PurchaseOrderItemEntity small = new PurchaseOrderItemEntity();
+        small.setProductId(5L);
+        small.setQuantity(2);
+        when(orderItems.byOrder(7L)).thenReturn(List.of(big, small));
+
+        service.delivered(7L, 5L);
+
+        InOrder inOrder = inOrder(stock);
+        inOrder.verify(stock).upsertAndAdd(5L, 2); // 先锁小号
+        inOrder.verify(stock).upsertAndAdd(9L, 1); // 再锁大号——所有事务同序，环消失
     }
 
     @Test
@@ -253,13 +335,13 @@ class PurchaseBusinessServiceTest {
     }
 
     @Test
-    @DisplayName("出库扣不到（并发下抢输了/本来就不够）：抛库存不足，不写流水")
+    @DisplayName("出库扣不到（并发下抢输了/本来就不够）：抛 409 冲突，不写流水")
     void adjustOutboundFailsWhenStockNotEnough() {
         when(catalog.product(1L)).thenReturn(new ProductEntity());
         when(stock.deduct(1L, 999)).thenReturn(0);
 
         assertThatThrownBy(() -> service.adjustStock(1L, -999, 9L))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(StateConflictException.class)
                 .hasMessageContaining("库存不足");
         verify(transactions, never()).insert(any(InventoryTransactionEntity.class));
     }

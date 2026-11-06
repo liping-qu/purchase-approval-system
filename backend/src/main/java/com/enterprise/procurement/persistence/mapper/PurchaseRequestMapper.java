@@ -3,11 +3,13 @@ package com.enterprise.procurement.persistence.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.enterprise.procurement.persistence.entity.PurchaseRequestEntity;
 import com.enterprise.procurement.persistence.entity.PurchaseRequestRow;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -49,6 +51,29 @@ public interface PurchaseRequestMapper extends BaseMapper<PurchaseRequestEntity>
             + "WHERE id=#{id} AND status=#{fromStatus} AND version=#{version}")
     int transition(@Param("id") Long id, @Param("fromStatus") String from, @Param("toStatus") String to,
                    @Param("version") Integer version);
+
+    /**
+     * 草稿内容更新：只改业务字段，<b>绝不触碰 status 和 version</b>。
+     *
+     * <p>改造前 {@code updateDraft} 走 MyBatis-Plus 的 {@code updateById} 全字段覆盖——
+     * 实体里的 {@code version} 只是普通列（项目没有 {@code @Version} 乐观锁插件），
+     * 一旦编辑期间单据被并发提交成 PENDING，保存会把状态写回 DRAFT、version 写回旧值，
+     * 后续所有 CAS 都建立在错误版本上。条件里的 {@code applicant_id + status='DRAFT'}
+     * 同时是并发兜底：不再是草稿就一行都改不动，由调用方翻译成 409。</p>
+     */
+    @Update("UPDATE purchase_request SET reason=#{reason}, total_amount=#{totalAmount}, updated_at=NOW() "
+            + "WHERE id=#{id} AND applicant_id=#{applicantId} AND status='DRAFT'")
+    int updateDraftFields(@Param("id") Long id, @Param("applicantId") Long applicantId,
+                          @Param("reason") String reason, @Param("totalAmount") BigDecimal totalAmount);
+
+    /**
+     * 条件删除：只有<b>仍然是本人的草稿</b>才删得掉。
+     *
+     * <p>改造前"先读后判再无条件 DELETE"——读与删之间单据若被提交，仍然会被连明细
+     * 带审批记录一起级联删掉。把状态条件压进 DELETE 本身，竞态窗口就闭合了。</p>
+     */
+    @Delete("DELETE FROM purchase_request WHERE id=#{id} AND applicant_id=#{applicantId} AND status='DRAFT'")
+    int deleteDraftRow(@Param("id") Long id, @Param("applicantId") Long applicantId);
 
     /** 我的申请列表，支持关键词与状态过滤（此前这两个参数被前端发了、后端完全忽略）。 */
     @Select("<script>" + ROW_SELECT

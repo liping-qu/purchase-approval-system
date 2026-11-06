@@ -62,6 +62,18 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 并发/状态冲突。
+     *
+     * <p>改造前这类失败抛 {@code IllegalStateException} 落到上面的 400：
+     * "两个人同时审批，慢的那个"和"参数写错了"用同一个状态码，前端无法区分
+     * "刷新重试"和"修改请求"。CAS 冲突的正确语义是 409 —— 请求没坏，只是基于旧状态。</p>
+     */
+    @ExceptionHandler(StateConflictException.class)
+    ResponseEntity<ApiResponse<Void>> stateConflict(StateConflictException e) {
+        return build(HttpStatus.CONFLICT, e.getMessage());
+    }
+
+    /**
      * 唯一键冲突兜底。
      *
      * <p>业务的幂等冲突大多已在 service 里翻译成具体提示（例如"该采购申请已生成订单"）。

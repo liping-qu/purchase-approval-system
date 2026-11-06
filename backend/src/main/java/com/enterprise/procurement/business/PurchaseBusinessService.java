@@ -2,6 +2,7 @@ package com.enterprise.procurement.business;
 
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.dto.PurchaseViewDtos;
+import com.enterprise.procurement.exception.StateConflictException;
 import com.enterprise.procurement.model.Enums.ApplicationStatus;
 import com.enterprise.procurement.model.Enums.OrderStatus;
 import com.enterprise.procurement.persistence.entity.*;
@@ -130,7 +131,9 @@ public class PurchaseBusinessService {
             throw new IllegalStateException("非法状态流转: " + from + " → " + to);
         }
         if (requests.transition(id, from.name(), to.name(), version) != 1) {
-            throw new IllegalStateException(conflictMessage);
+            // 竞态输家：抛 StateConflictException → 409，而不是 IllegalStateException → 400。
+            // "被人抢先"和"参数写错"必须能用状态码区分开。
+            throw new StateConflictException(conflictMessage);
         }
     }
 
@@ -139,7 +142,7 @@ public class PurchaseBusinessService {
             throw new IllegalStateException("非法状态流转: " + from + " → " + to);
         }
         if (orders.transition(id, from.name(), to.name(), version) != 1) {
-            throw new IllegalStateException(conflictMessage);
+            throw new StateConflictException(conflictMessage);
         }
     }
 
@@ -304,7 +307,8 @@ public class PurchaseBusinessService {
         if (quantity > 0) {
             stock.upsertAndAdd(productId, quantity);
         } else if (stock.deduct(productId, -quantity) == 0) {
-            throw new IllegalStateException("库存不足，无法出库");
+            // 并发下抢输了或本来就不够——都是"当前状态不允许"，409 而不是 400
+            throw new StateConflictException("库存不足，无法出库");
         }
 
         InventoryTransactionEntity tx = new InventoryTransactionEntity();
@@ -333,7 +337,12 @@ public class PurchaseBusinessService {
         r.setUpdatedAt(LocalDateTime.now());
         r.setTotalAmount(BigDecimal.ZERO);
         requests.insert(r);
-        fillItems(r, dto.items());
+        BigDecimal total = fillItems(r.getId(), dto.items());
+        // 新插入的行在同一事务里，条件必然命中；仍检查行数是防御将来有人改这段代码
+        if (requests.updateDraftFields(r.getId(), v.id(), dto.reason(), total) != 1) {
+            throw new StateConflictException("草稿创建失败，请重试");
+        }
+        r.setTotalAmount(total);
         return r;
     }
 
@@ -344,8 +353,12 @@ public class PurchaseBusinessService {
      * 改造前不归并，导致同一张单里出现两条 {@code product_id} 相同的明细，
      * 入库时第二条用的还是事务内第一次读到的旧 {@code version}，
      * CAS 必然失败 → 整单回滚 → 用户怎么重试都失败。</p>
+     *
+     * <p>只写明细、算总额，<b>不再回写主表</b>——主表更新统一走
+     * {@link PurchaseRequestMapper#updateDraftFields} 的条件语句，
+     * 杜绝 updateById 全字段覆盖绕过状态条件的老路径。</p>
      */
-    private void fillItems(PurchaseRequestEntity r, List<PurchaseRequestDtos.Item> input) {
+    private BigDecimal fillItems(Long requestId, List<PurchaseRequestDtos.Item> input) {
         Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
         Map<Long, BigDecimal> priceByProduct = new LinkedHashMap<>();
         for (PurchaseRequestDtos.Item in : input) {
@@ -363,7 +376,7 @@ public class PurchaseBusinessService {
             BigDecimal amount = unitPrice.multiply(BigDecimal.valueOf(entry.getValue()));
 
             PurchaseRequestItemEntity i = new PurchaseRequestItemEntity();
-            i.setRequestId(r.getId());
+            i.setRequestId(requestId);
             i.setProductId(p.getId());
             i.setProductName(p.getName()); // 快照：商品改名后历史单据不受影响
             i.setQuantity(entry.getValue());
@@ -372,33 +385,39 @@ public class PurchaseBusinessService {
             requestItems.insert(i);
             total = total.add(amount);
         }
-        r.setTotalAmount(total);
-        requests.updateById(r);
+        return total;
     }
 
     @Transactional
     public PurchaseRequestEntity updateDraft(Long id, String username, PurchaseRequestDtos.Update dto) {
+        Viewer v = viewer(username);
         PurchaseRequestEntity r = requireRequest(id);
-        if (!r.getApplicantId().equals(viewer(username).id())
-                || !ApplicationStatus.DRAFT.name().equals(r.getStatus())) {
-            throw new IllegalStateException("仅草稿本人可编辑");
-        }
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("仅草稿本人可编辑");
+        if (!ApplicationStatus.DRAFT.name().equals(r.getStatus())) throw new IllegalStateException("仅草稿状态可编辑");
+
         requestItems.deleteByRequest(id);
+        BigDecimal total = fillItems(id, dto.items());
+        // 竞态闭合点：读判之后单据若被并发提交（DRAFT→PENDING），这里影响行数为 0。
+        // 改造前是 updateById 全字段覆盖——status/version 会被实体里的旧值写回去，
+        // 等于把"已提交"悄悄改回"草稿"，后续审批全部建立在被污染的版本号上。
+        if (requests.updateDraftFields(id, v.id(), dto.reason(), total) != 1) {
+            throw new StateConflictException("申请已进入审批流程，本次修改未生效");
+        }
         r.setReason(dto.reason());
-        r.setUpdatedAt(LocalDateTime.now());
-        fillItems(r, dto.items());
+        r.setTotalAmount(total);
         return r;
     }
 
     @Transactional
     public void deleteDraft(Long id, String username) {
+        Viewer v = viewer(username);
         PurchaseRequestEntity r = requireRequest(id);
-        if (!r.getApplicantId().equals(viewer(username).id())
-                || !ApplicationStatus.DRAFT.name().equals(r.getStatus())) {
-            throw new IllegalStateException("仅草稿本人可删除");
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("仅草稿本人可删除");
+        // 条件删除：只有仍是 DRAFT 才删得动；明细/审批记录靠 ON DELETE CASCADE 一并清理。
+        // 改造前先读后判再无条件 DELETE——读与删之间单据被提交，仍会被连审批记录一起删掉。
+        if (requests.deleteDraftRow(id, v.id()) != 1) {
+            throw new StateConflictException("申请已进入审批流程，无法删除");
         }
-        requestItems.deleteByRequest(id);
-        requests.deleteById(id);
     }
 
     @Transactional
@@ -482,7 +501,8 @@ public class PurchaseBusinessService {
     public PurchaseOrderEntity createOrder(Long requestId, Long supplierId) {
         PurchaseRequestEntity r = requireRequest(requestId);
         if (!ApplicationStatus.APPROVED.name().equals(r.getStatus())) {
-            throw new IllegalStateException("申请未审批通过");
+            // 状态问题而不是参数问题：未通过审批/已被别人下单，都应 409 而非 400
+            throw new StateConflictException("申请未审批通过或已进入采购流程");
         }
         // catalog.supplier 带 active=1 条件：已停用的供应商不能再下单，提示要能区分"没这个供应商"
         if (catalog.supplier(supplierId) == null) throw new IllegalArgumentException("供应商不存在或已停用");
@@ -500,8 +520,8 @@ public class PurchaseBusinessService {
             orders.insert(o);
         } catch (DuplicateKeyException e) {
             // 并发下单时，第二个事务会卡在 uk_order_request 上，等第一个提交后拿到重复键错误。
-            // 这属于"业务上不该重复"的正常竞态结果，翻译成 4xx 而不是让 500 冒出来。
-            throw new IllegalStateException("该采购申请已生成订单，请勿重复下单");
+            // 这属于"业务上不该重复"的正常竞态结果，翻译成 409 而不是让 500 冒出来。
+            throw new StateConflictException("该采购申请已生成订单，请勿重复下单");
         }
 
         for (PurchaseRequestItemEntity ri : items(requestId)) {
@@ -524,21 +544,28 @@ public class PurchaseBusinessService {
      *
      * <p>三个改造点：</p>
      * <ol>
-     *   <li><b>状态流转仍用 CAS</b>，重复提交第二次必然被拒；</li>
+     *   <li><b>重复入库先给人话</b>：订单已是 DELIVERED 时直接 409"订单已入库"，
+     *       而不是让状态机抛"非法状态流转: DELIVERED → DELIVERED"这种内部术语；</li>
      *   <li><b>库存改成原子 upsert</b>（{@code INSERT ... ON DUPLICATE KEY UPDATE quantity = quantity + ?}），
      *       顺带修掉"首次入库并发插入主键冲突"和"同单重复商品用旧 version 更新必失败"两个问题；</li>
-     *   <li><b>明细先按商品归并</b>再入库，保证每个商品只产生一条流水，
-     *       与 {@code uk_inventory_tx_ref} 唯一键保持一致。</li>
+     *   <li><b>明细先按商品归并、再按商品号升序入库</b>：保证每个商品只产生一条流水，
+     *       与 {@code uk_inventory_tx_ref} 唯一键保持一致；同时所有事务以相同顺序获取
+     *       库存行锁——改造前按明细插入顺序入库，两张订单的商品集合交叉时会互相持有
+     *       对方想要的行锁，InnoDB 检测到死锁（ERROR 1213）回滚一方，接口表现成偶发 500。</li>
      * </ol>
      */
     @Transactional
     public PurchaseOrderEntity delivered(Long id, Long operatorId) {
         PurchaseOrderEntity o = orders.selectById(id);
         if (o == null) throw new NoSuchElementException("订单不存在");
+        if (OrderStatus.DELIVERED.name().equals(o.getStatus())) {
+            throw new StateConflictException("订单已入库，请勿重复操作");
+        }
 
-        moveOrder(id, OrderStatus.CREATED, OrderStatus.DELIVERED, o.getVersion(), "订单已处理");
+        moveOrder(id, OrderStatus.CREATED, OrderStatus.DELIVERED, o.getVersion(), "订单已被他人处理，请刷新后重试");
 
-        Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
+        // TreeMap：按 productId 升序遍历，统一所有事务的加锁顺序
+        Map<Long, Integer> quantityByProduct = new TreeMap<>();
         for (PurchaseOrderItemEntity i : orderItems.byOrder(id)) {
             quantityByProduct.merge(i.getProductId(), i.getQuantity(), Integer::sum);
         }
