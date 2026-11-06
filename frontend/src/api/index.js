@@ -13,6 +13,13 @@ async function request(method, url, data, fallback, config = {}) {
 }
 
 /**
+ * 幂等键请求头。为空时不加头——后端把"没有 key"当作不做幂等，老客户端照常工作。
+ */
+function idem(key) {
+  return key ? { headers: { 'Idempotency-Key': key } } : {}
+}
+
+/**
  * 接口清单。
  *
  * 约定：这里的 URL 与后端 Controller 的 @RequestMapping 一一对应，
@@ -27,7 +34,8 @@ export const api = {
 
   requests: (params) => request('get', '/purchase-requests', params, () => mockApi.requests(params)),
   requestDetail: (id) => request('get', `/purchase-requests/${id}`, null, () => mockApi.requestDetail?.(id)),
-  createRequest: (payload) => request('post', '/purchase-requests', payload, () => mockApi.createRequest(payload)),
+  createRequest: (payload, idemKey) => request('post', '/purchase-requests', payload,
+    () => mockApi.createRequest(payload), idem(idemKey)),
   submitRequest: (id) => request('post', `/purchase-requests/${id}/submit`, null, () => mockApi.submitRequest(id)),
   withdrawRequest: (id) => request('post', `/purchase-requests/${id}/withdraw`, null, () => mockApi.withdrawRequest?.(id)),
 
@@ -49,7 +57,8 @@ export const api = {
   receiveOrder: (id) => request('post', `/purchase-orders/${id}/delivered`, null, () => mockApi.receiveOrder(id)),
 
   inventory: () => request('get', '/inventory/stock', null, () => mockApi.inventory()),
-  adjustInventory: (productId, quantity) => request('post', `/inventory/${productId}/adjust`, { quantity }, () => mockApi.adjustInventory(productId, quantity)),
+  adjustInventory: (productId, quantity, idemKey) => request('post', `/inventory/${productId}/adjust`, { quantity },
+    () => mockApi.adjustInventory(productId, quantity), idem(idemKey)),
   logs: (params) => request('get', '/admin/operation-logs', params, () => mockApi.logs()),
   users: () => request('get', '/users', null, () => mockApi.users())
 }

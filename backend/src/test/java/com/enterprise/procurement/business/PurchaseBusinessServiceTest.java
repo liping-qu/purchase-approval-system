@@ -52,8 +52,19 @@ class PurchaseBusinessServiceTest {
     @Mock InventoryTransactionMapper transactions;
     @Mock CatalogMapper catalog;
     @Mock DocumentNoGenerator documentNo;
+    @Mock IdempotencyService idempotency;
 
     @InjectMocks PurchaseBusinessService service;
+
+    /**
+     * 默认"没有幂等键"：所有既有用例都走不做幂等的分支，行为与改造前一致。
+     * 需要验证幂等的用例自己覆盖这个桩。
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void stubIdempotencyAsDisabled() {
+        when(idempotency.claim(any(), any(), any(), any()))
+                .thenReturn(new IdempotencyService.Claim(false, null));
+    }
 
     // ---------------------------------------------------------------- 测试数据
 
@@ -226,6 +237,72 @@ class PurchaseBusinessServiceTest {
                 .isInstanceOf(StateConflictException.class)
                 .hasMessageContaining("审批流程");
         verify(requests, never()).deleteById(anyLong());
+    }
+
+    @Test
+    @DisplayName("建单带幂等键：成功后把业务主键写回幂等记录，重试才能回放")
+    void createDraftRecordsIdempotencyResult() {
+        user(1L, 1L, "EMPLOYEE");
+        ProductEntity p = new ProductEntity();
+        p.setId(1L);
+        p.setName("A4 纸");
+        when(catalog.product(1L)).thenReturn(p);
+        when(documentNo.nextRequestNo()).thenReturn("PR20261106000001");
+        when(requests.updateDraftFields(anyLong(), eq(1L), anyString(), any())).thenReturn(1);
+        doAnswer(inv -> {
+            ((PurchaseRequestEntity) inv.getArgument(0)).setId(500L); // 模拟自增主键回填
+            return 1;
+        }).when(requests).insert(any(PurchaseRequestEntity.class));
+
+        var dto = new PurchaseRequestDtos.Create("买打印纸",
+                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))));
+        PurchaseRequestEntity created = service.createDraft("u1", dto, "key-abc-123");
+
+        assertThat(created.getId()).isEqualTo(500L);
+        verify(idempotency).complete("key-abc-123", 1L, 500L);
+    }
+
+    @Test
+    @DisplayName("建单命中幂等：直接返回上次那张单，不再插入第二张")
+    void createDraftReplaysExistingWhenKeyAlreadyUsed() {
+        user(1L, 1L, "EMPLOYEE");
+        when(idempotency.claim(eq("key-abc-123"), eq(1L), eq("CREATE_REQUEST"), any()))
+                .thenReturn(new IdempotencyService.Claim(true, 500L));
+        PurchaseRequestEntity existing = new PurchaseRequestEntity();
+        existing.setId(500L);
+        existing.setStatus("DRAFT");
+        when(requests.selectById(500L)).thenReturn(existing);
+
+        var dto = new PurchaseRequestDtos.Create("买打印纸",
+                List.of(new PurchaseRequestDtos.Item(1L, 2, new java.math.BigDecimal("3.00"))));
+        PurchaseRequestEntity got = service.createDraft("u1", dto, "key-abc-123");
+
+        assertThat(got.getId()).isEqualTo(500L);
+        verify(requests, never()).insert(any(PurchaseRequestEntity.class));
+    }
+
+    @Test
+    @DisplayName("调整库存命中幂等：直接返回成功，库存与流水都不再动")
+    void repeatedAdjustWithSameKeyDoesNotTouchStock() {
+        when(catalog.product(1L)).thenReturn(new ProductEntity());
+        when(idempotency.claim(eq("st-key-0001"), eq(9L), eq("ADJUST_STOCK"),
+                eq(IdempotencyService.fingerprint(1L, 5))))
+                .thenReturn(new IdempotencyService.Claim(true, null));
+
+        service.adjustStock(1L, 5, 9L, "st-key-0001");
+
+        verify(stock, never()).upsertAndAdd(anyLong(), anyInt());
+        verify(transactions, never()).insert(any(InventoryTransactionEntity.class));
+    }
+
+    @Test
+    @DisplayName("重复提交：已是 PENDING 且是本人 → 幂等成功，不再走一次状态流转")
+    void submitIsIdempotentWhenAlreadyPending() {
+        user(1L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "PENDING");
+
+        assertThat(service.submit(100L, "u1").getStatus()).isEqualTo("PENDING");
+        verify(requests, never()).transition(anyLong(), anyString(), anyString(), anyInt());
     }
 
     // ---------------------------------------------------------------- 入库

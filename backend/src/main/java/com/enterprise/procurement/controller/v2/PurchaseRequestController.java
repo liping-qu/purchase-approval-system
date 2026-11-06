@@ -46,8 +46,10 @@ public class PurchaseRequestController {
 
     @PostMapping
     @OperationLog(value = "创建采购申请", module = "采购申请")
-    public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.Create dto, Principal principal) {
-        return ApiResponse.ok("草稿已创建", service.createDraft(principal.getName(), dto));
+    public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.Create dto,
+                                 @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
+                                 Principal principal) {
+        return ApiResponse.ok("草稿已创建", service.createDraft(principal.getName(), dto, idemKey));
     }
 
     @PutMapping("/{id}")

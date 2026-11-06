@@ -111,6 +111,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import { newIdempotencyKey } from '../utils/id'
 import StatusTag from '../components/StatusTag.vue'
 import { Plus, Search, Refresh, Delete } from '@element-plus/icons-vue'
 
@@ -126,6 +127,11 @@ const formRef = ref()
 
 const emptyItem = () => ({ productId: null, quantity: 1, unitPrice: 0 })
 const form = reactive({ reason: '', items: [emptyItem()] })
+/**
+ * 本次「新建申请」的幂等键：打开弹窗时生成一次，失败重试沿用同一个。
+ * 每次点击都新生成的话，服务端就无法区分"重试"和"真的想再建一张"。
+ */
+const idemKey = ref('')
 const rules = { reason: [{ required: true, message: '请填写采购事由', trigger: 'blur' }] }
 const totalAmount = computed(() => form.items.reduce((sum, i) => sum + Number(i.quantity || 0) * Number(i.unitPrice || 0), 0))
 
@@ -147,6 +153,7 @@ function reset() {
 
 async function openCreate() {
   Object.assign(form, { reason: '', items: [emptyItem()] })
+  idemKey.value = newIdempotencyKey() // 一次操作一个键，重试复用
   dialogVisible.value = true
   if (!products.value.length) products.value = await api.products()
 }
@@ -169,10 +176,11 @@ async function save(submitAfterCreate) {
   try {
     // 后端只认 productId：商品名称是下单时的快照，由服务端按 id 回填，
     // 客户端传名称没有任何意义（也无法校验它跟 id 是否对得上）。
+    // 带幂等键：超时重试 / 连点两次不会变成两张草稿，第二次会直接拿回第一张
     const created = await api.createRequest({
       reason: form.reason,
       items: form.items.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice }))
-    })
+    }, idemKey.value)
     if (submitAfterCreate) {
       if (!created?.id) throw new Error('草稿已保存，但未拿到单据编号，无法自动提交')
       await api.submitRequest(created.id)

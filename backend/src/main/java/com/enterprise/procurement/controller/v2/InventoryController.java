@@ -49,9 +49,10 @@ public class InventoryController {
     @OperationLog(value = "手工调整库存", module = "库存")
     public ApiResponse<?> adjust(@PathVariable Long productId,
                                  @RequestBody(required = false) InventoryDtos.Adjust body,
+                                 @RequestHeader(value = "Idempotency-Key", required = false) String idemKey,
                                  Principal principal) {
         Integer quantity = body == null ? null : body.quantity();
-        service.adjustStock(productId, quantity, service.userId(principal.getName()));
+        service.adjustStock(productId, quantity, service.userId(principal.getName()), idemKey);
         return ApiResponse.ok(quantity > 0 ? "入库成功" : "出库成功", null);
     }
 }

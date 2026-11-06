@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 采购主流程：申请 → 提交 → 审批 → 下单 → 入库。
@@ -39,10 +40,12 @@ public class PurchaseBusinessService {
     private final InventoryTransactionMapper transactions;
     private final CatalogMapper catalog;
     private final DocumentNoGenerator documentNo;
+    private final IdempotencyService idempotency;
 
     public PurchaseBusinessService(PurchaseRequestMapper r, PurchaseRequestItemMapper ri, ApprovalRecordMapper a,
                                    PurchaseOrderMapper o, PurchaseOrderItemMapper oi, InventoryStockMapper s,
-                                   InventoryTransactionMapper t, CatalogMapper c, DocumentNoGenerator documentNo) {
+                                   InventoryTransactionMapper t, CatalogMapper c, DocumentNoGenerator documentNo,
+                                   IdempotencyService idempotency) {
         this.requests = r;
         this.requestItems = ri;
         this.approvals = a;
@@ -52,6 +55,7 @@ public class PurchaseBusinessService {
         this.transactions = t;
         this.catalog = c;
         this.documentNo = documentNo;
+        this.idempotency = idempotency;
     }
 
     // ------------------------------------------------------------------ 身份
@@ -298,12 +302,32 @@ public class PurchaseBusinessService {
      */
     @Transactional
     public void adjustStock(Long productId, Integer quantity, Long operatorId) {
+        adjustStock(productId, quantity, operatorId, null);
+    }
+
+    /**
+     * 带幂等键的库存调整。
+     *
+     * <p>这是四个并发场景里<b>唯一没有任何天然唯一键保护</b>的写操作：每调一次都会
+     * 生成新的 ST 单号，{@code uk_inventory_tx_ref} 拦不住第二次。网络重试或连点两次
+     * 就会重复加减库存，所以必须靠客户端幂等键兜住。</p>
+     */
+    @Transactional
+    public void adjustStock(Long productId, Integer quantity, Long operatorId, String idemKey) {
         if (quantity == null || quantity == 0) {
             throw new IllegalArgumentException("调整数量不能为 0");
         }
         if (catalog.product(productId) == null) {
             throw new IllegalArgumentException("商品不存在或已停用");
         }
+
+        var claim = idempotency.claim(idemKey, operatorId, "ADJUST_STOCK",
+                IdempotencyService.fingerprint(productId, quantity));
+        if (claim.replay()) {
+            // 上次已经成功执行过：再执行一次就是重复加/减库存，直接返回成功
+            return;
+        }
+
         if (quantity > 0) {
             stock.upsertAndAdd(productId, quantity);
         } else if (stock.deduct(productId, -quantity) == 0) {
@@ -319,13 +343,39 @@ public class PurchaseBusinessService {
         tx.setOperatorId(operatorId);
         tx.setCreatedAt(LocalDateTime.now());
         transactions.insert(tx);
+
+        idempotency.complete(idemKey, operatorId, null);
     }
 
     // ------------------------------------------------------------------ 申请单
 
     @Transactional
     public PurchaseRequestEntity createDraft(String username, PurchaseRequestDtos.Create dto) {
+        return createDraft(username, dto, null);
+    }
+
+    /**
+     * 带幂等键的建单。
+     *
+     * <p>创建申请是唯一"同一个用户合法地可以提交两张相同单据"的写操作，
+     * 因此既没有天然唯一键，也无法靠状态机区分"重试"与"真的想再建一张"。
+     * 只有客户端知道这次点击是不是上一次的重发，所以幂等键必须由客户端提供。</p>
+     *
+     * <p>命中重放时返回<b>上次创建的那张单</b>，而不是报错——对用户来说，
+     * "我已经提交过了"就应该看到那张单，而不是一条红色提示。</p>
+     */
+    @Transactional
+    public PurchaseRequestEntity createDraft(String username, PurchaseRequestDtos.Create dto, String idemKey) {
         Viewer v = viewer(username);
+        var claim = idempotency.claim(idemKey, v.id(), "CREATE_REQUEST", fingerprintOf(dto));
+        if (claim.replay()) {
+            PurchaseRequestEntity existing = claim.resultId() == null ? null : requests.selectById(claim.resultId());
+            if (existing == null) {
+                throw new StateConflictException("该请求已处理，但对应申请单已不存在，请刷新后重试");
+            }
+            return existing;
+        }
+
         PurchaseRequestEntity r = new PurchaseRequestEntity();
         r.setRequestNo(documentNo.nextRequestNo());
         r.setApplicantId(v.id());
@@ -343,7 +393,18 @@ public class PurchaseBusinessService {
             throw new StateConflictException("草稿创建失败，请重试");
         }
         r.setTotalAmount(total);
+        idempotency.complete(idemKey, v.id(), r.getId());
         return r;
+    }
+
+    /** 请求指纹：事由 + 按商品号排序后的明细，明细顺序不同不算新请求。 */
+    private static String fingerprintOf(PurchaseRequestDtos.Create dto) {
+        String items = dto.items().stream()
+                .sorted(Comparator.comparing(PurchaseRequestDtos.Item::productId)
+                        .thenComparing(PurchaseRequestDtos.Item::quantity))
+                .map(i -> i.productId() + ":" + i.quantity() + ":" + i.unitPrice().stripTrailingZeros().toPlainString())
+                .collect(Collectors.joining(","));
+        return IdempotencyService.fingerprint(dto.reason(), items);
     }
 
     /**
@@ -423,7 +484,14 @@ public class PurchaseBusinessService {
     @Transactional
     public PurchaseRequestEntity submit(Long id, String username) {
         PurchaseRequestEntity r = requireRequest(id);
-        if (!r.getApplicantId().equals(viewer(username).id())) throw new IllegalStateException("无权提交");
+        Viewer v = viewer(username);
+        if (!Objects.equals(r.getApplicantId(), v.id())) throw new IllegalStateException("无权提交");
+        if (ApplicationStatus.PENDING.name().equals(r.getStatus())) {
+            // 幂等成功：只有提交能把 DRAFT 变成 PENDING，所以"已是 PENDING 且是本人"
+            // 只可能是上一次提交已经成功（网络超时重试 / 连点两次）。
+            // 这时报 409 会让用户以为失败，正确做法是原样返回当前单据。
+            return r;
+        }
         moveRequest(id, ApplicationStatus.DRAFT, ApplicationStatus.PENDING, r.getVersion(), "申请状态已变更");
         return requireRequest(id);
     }
