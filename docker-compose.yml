@@ -3,7 +3,9 @@ services:
     image: mysql:8.4
     container_name: procurement-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      # 本地开发默认 root，可用环境变量覆盖；公开部署务必换成强口令。
+      # 用 ${VAR:-default} 而不是写死，是为了让"改口令"只需要改 .env，不用改 compose。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: procurement
       TZ: Asia/Shanghai
     # 3306 is already occupied by the MySQL service on this Windows host.
@@ -14,7 +16,8 @@ services:
       # 不再挂载初始化 SQL：容器只负责建空库，表结构与种子数据全部由后端启动时的
       # Flyway（backend/src/main/resources/db/migration）执行，避免两份 DDL 漂移。
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      # $$ 是 compose 的转义：容器内取同名环境变量，避免口令写死在健康检查里
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -36,7 +39,8 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/procurement?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
       SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
+      # 与 mysql 服务用同一个变量，避免"库口令改了、应用还连旧口令"这种低级不一致
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_PROFILES_ACTIVE: docker
       # 未设置 JWT_SECRET 时 compose 直接报错退出，而不是悄悄用一个公开的默认密钥启动

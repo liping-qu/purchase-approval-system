@@ -28,6 +28,9 @@ spring:
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:procurement}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true
     username: ${MYSQL_USER:root}
+    # 默认值是本地开发专用；公开/生产部署必须通过 MYSQL_PASSWORD 注入强口令。
+    # 之所以留默认值而不是像 JWT_SECRET 那样强制必填：数据库口令缺失时应用会在
+    # 连接池初始化阶段直接失败，本身就是"启动即暴露"，再加一层必填只是让本地开发更麻烦。
     password: ${MYSQL_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
 app:

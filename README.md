@@ -326,6 +326,15 @@ Flyway 首次启动写入，统一口令 `admin123`：
 
 生产环境请立即改密并更换 `JWT_SECRET`。
 
+### 安全说明（公开仓库必读）
+
+- `JWT_SECRET` **没有内置默认值**：不注入则启动失败。这是刻意的——默认密钥等于公开密钥。
+- `docker-compose.yml` 的 MySQL 口令写成 `${MYSQL_ROOT_PASSWORD:-root}`：`root` 只是本地开发默认值，
+  复制 `.env.example` 为 `.env` 并改成强口令即可覆盖，不需要改 compose 文件。
+- `application.yml` 的 `MYSQL_PASSWORD:root` 同理，仅本地开发默认值；生产用环境变量覆盖。
+- `V4` 种子里的 `admin123` 是**演示账号**的 BCrypt 哈希，不是明文口令泄露，但公开部署前必须改密。
+- 仓库里没有 `.env`、私钥、访问令牌；`.gitignore` 已排除 `node_modules`、`target`、`dist`、`.env`。
+
 ---
 
 ## 十二、升级记录
