@@ -34,6 +34,7 @@ export const api = {
 
   requests: (params) => request('get', '/purchase-requests', params, () => mockApi.requests(params)),
   requestDetail: (id) => request('get', `/purchase-requests/${id}`, null, () => mockApi.requestDetail?.(id)),
+  requestApprovals: (id) => request('get', `/purchase-requests/${id}/approvals`, null, () => mockApi.requestApprovals?.(id) ?? []),
   createRequest: (payload, idemKey) => request('post', '/purchase-requests', payload,
     () => mockApi.createRequest(payload), idem(idemKey)),
   submitRequest: (id) => request('post', `/purchase-requests/${id}/submit`, null, () => mockApi.submitRequest(id)),
@@ -51,7 +52,8 @@ export const api = {
   deleteSupplier: (id) => request('delete', `/suppliers/${id}`, null, () => mockApi.deleteSupplier(id)),
   restoreSupplier: (id) => request('post', `/suppliers/${id}/restore`, null, () => true),
 
-  orders: () => request('get', '/purchase-orders', null, () => mockApi.orders()),
+  orders: (params) => request('get', '/purchase-orders', params, () => mockApi.orders()),
+  orderDetail: (id) => request('get', `/purchase-orders/${id}`, null, () => mockApi.orderDetail?.(id)),
   orderableRequests: () => request('get', '/purchase-orders/orderable', null, () => mockApi.requests()),
   createOrder: (payload) => request('post', '/purchase-orders', payload, () => mockApi.createOrder?.(payload)),
   receiveOrder: (id) => request('post', `/purchase-orders/${id}/delivered`, null, () => mockApi.receiveOrder(id)),

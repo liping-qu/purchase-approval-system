@@ -104,6 +104,21 @@
       <el-table-column prop="unitPrice" label="单价" width="120" />
       <el-table-column prop="amount" label="小计" width="130" />
     </el-table>
+
+    <!-- 审批留痕：数据一直在 approval_record 里，改前没有任何接口读它，页面上看不到谁批的 -->
+    <h4>审批记录</h4>
+    <el-timeline v-if="approvals.length">
+      <el-timeline-item
+        v-for="a in approvals"
+        :key="a.id"
+        :timestamp="a.createTime"
+        :type="a.action === 'APPROVE' ? 'success' : 'danger'"
+      >
+        {{ a.approver }} {{ a.action === 'APPROVE' ? '通过' : '驳回' }}
+        <span v-if="a.comment">：{{ a.comment }}</span>
+      </el-timeline-item>
+    </el-timeline>
+    <el-empty v-else description="尚无审批记录" :image-size="56" />
   </el-dialog>
 </template>
 
@@ -123,6 +138,7 @@ const filters = reactive({ keyword: '', status: '' })
 const dialogVisible = ref(false)
 const detailVisible = ref(false)
 const selected = ref(null)
+const approvals = ref([])
 const formRef = ref()
 
 const emptyItem = () => ({ productId: null, quantity: 1, unitPrice: 0 })
@@ -201,9 +217,16 @@ async function save(submitAfterCreate) {
 /** 详情走独立接口：列表行不含明细，弹窗需要 items 才能显示商品。 */
 async function view(row) {
   selected.value = { ...row, items: [] }
+  approvals.value = []
   detailVisible.value = true
   try {
-    selected.value = await api.requestDetail(row.id)
+    // 详情与审批留痕并行拉取：两个接口互不依赖，串行只会让弹窗多等一个来回
+    const [detail, history] = await Promise.all([
+      api.requestDetail(row.id),
+      api.requestApprovals(row.id).catch(() => []) // 留痕失败不该让整个弹窗打不开
+    ])
+    selected.value = detail
+    approvals.value = Array.isArray(history) ? history : []
   } catch (e) {
     ElMessage.error(e?.response?.data?.message || '加载详情失败')
   }

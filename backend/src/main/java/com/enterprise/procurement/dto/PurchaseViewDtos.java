@@ -68,4 +68,38 @@ public final class PurchaseViewDtos {
                            String status,
                            LocalDateTime createTime) {
     }
+
+    /**
+     * 订单详情。
+     *
+     * <p>改造前订单详情只返回行数据，<b>没有明细</b>：采购员点开一张单，看不到
+     * 到底买了哪几样、各多少件。明细一直存在 {@code purchase_order_item} 里，
+     * 只是没有接口读它。</p>
+     *
+     * <p>字段是 {@link OrderRow} 的超集，前端原有取值（orderNo/supplier/amount…）
+     * 一个都不用改，只是多了一个 {@code items} 可以用。</p>
+     */
+    public record OrderDetail(Long id,
+                              String orderNo,
+                              Long requestId,
+                              String requestNo,
+                              String reason,
+                              String supplier,
+                              BigDecimal amount,
+                              String status,
+                              LocalDateTime createTime,
+                              List<ItemRow> items) {
+    }
+
+    /**
+     * 审批留痕。
+     *
+     * @param action APPROVE / REJECT —— 前端据此渲染绿色通过 / 红色驳回
+     */
+    public record ApprovalRow(Long id,
+                              String approver,
+                              String action,
+                              String comment,
+                              LocalDateTime createTime) {
+    }
 }

@@ -530,24 +530,106 @@ class PurchaseBusinessServiceTest {
     }
 
     @Test
-    @DisplayName("订单列表：普通员工走带归属条件的查询，而不是拉全量再逐行点查")
-    void orderListUsesScopedQueryForEmployee() {
+    @DisplayName("订单分页：普通员工走带归属条件的分页查询，total 来自服务端而不是当前页行数")
+    void orderPageScopesQueryForEmployee() {
         user(2L, 5L, "EMPLOYEE");
         PurchaseOrderRow o = new PurchaseOrderRow();
         o.setId(7L);
         o.setOrderNo("PO20261029000001");
-        o.setRequestNo("PR20261029000001");
-        o.setSupplier("鼎盛办公");
         o.setStatus("CREATED");
-        when(orders.rowsFor(2L, 5L)).thenReturn(List.of(o));
 
-        List<PurchaseViewDtos.OrderRow> rows = service.orderList("u2");
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<PurchaseOrderRow> page =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 10);
+        page.setRecords(List.of(o));
+        page.setTotal(37L);
+        when(orders.pageFor(any(), eq(2L), eq(5L), isNull(), isNull(), isNull())).thenReturn(page);
 
-        assertThat(rows).singleElement().satisfies(r -> {
-            assertThat(r.requestNo()).isEqualTo("PR20261029000001");
-            assertThat(r.supplier()).isEqualTo("鼎盛办公");
-        });
-        verify(orders, never()).rows();
+        var result = service.orderPage("u2", null, null, null, 1, 10);
+
+        assertThat(result.total()).isEqualTo(37L);
+        assertThat(result.records()).singleElement()
+                .satisfies(r -> assertThat(r.orderNo()).isEqualTo("PO20261029000001"));
+        verify(orders, never()).pageAll(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("编辑已提交的单：状态不对属于冲突（409），不是参数错（400）")
+    void updateNonDraftIsConflictNotBadRequest() {
+        user(1L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "PENDING");
+
+        var dto = new PurchaseRequestDtos.Update("还想改",
+                List.of(new PurchaseRequestDtos.Item(1L, 1, new java.math.BigDecimal("1.00"))));
+        assertThatThrownBy(() -> service.updateDraft(100L, "u1", dto))
+                .isInstanceOf(StateConflictException.class)
+                .hasMessageContaining("审批流程");
+    }
+
+    @Test
+    @DisplayName("对已下单的申请再下单：错误码精确到 REQUEST_ALREADY_ORDERED")
+    void createOrderOnPurchasingGivesPreciseCode() {
+        user(4L, 5L, "PURCHASER");
+        request(100L, 1L, 1L, "PURCHASING");
+
+        assertThatThrownBy(() -> service.createOrder(100L, 1L))
+                .isInstanceOf(StateConflictException.class)
+                .satisfies(e -> assertThat(((StateConflictException) e).errorCode())
+                        .isEqualTo(com.enterprise.procurement.exception.ErrorCode.REQUEST_ALREADY_ORDERED));
+    }
+
+    @Test
+    @DisplayName("订单详情：带出明细行 —— 改前点开订单看不到买了什么")
+    void orderDetailCarriesItems() {
+        user(9L, null, "ADMIN");
+        PurchaseOrderEntity o = new PurchaseOrderEntity();
+        o.setId(7L);
+        o.setOrderNo("PO20261029000001");
+        o.setRequestId(100L);
+        o.setVersion(1);
+        o.setStatus("CREATED");
+        o.setTotalAmount(new java.math.BigDecimal("45.00"));
+        when(orders.selectById(7L)).thenReturn(o);
+        when(orders.rowById(7L)).thenReturn(orderRowRow());
+
+        PurchaseOrderItemEntity item = new PurchaseOrderItemEntity();
+        item.setId(3L);
+        item.setProductId(1L);
+        item.setProductName("A4 纸");
+        item.setQuantity(5);
+        item.setUnitPrice(new java.math.BigDecimal("9.00"));
+        item.setAmount(new java.math.BigDecimal("45.00"));
+        when(orderItems.byOrder(7L)).thenReturn(List.of(item));
+
+        var detail = service.orderDetail(7L, "u9");
+
+        assertThat(detail.supplier()).isEqualTo("华夏办公");
+        assertThat(detail.items()).singleElement()
+                .satisfies(i -> assertThat(i.productName()).isEqualTo("A4 纸"));
+    }
+
+    @Test
+    @DisplayName("审批留痕：越权时 404 且不查审批记录（不泄露这张单是否被批过）")
+    void approvalHistoryRequiresVisibility() {
+        user(2L, 1L, "EMPLOYEE");
+        request(100L, 1L, 1L, "PENDING");
+
+        assertThatThrownBy(() -> service.approvalHistory(100L, "u2"))
+                .isInstanceOf(NoSuchElementException.class);
+        verify(approvals, never()).rowsByRequest(anyLong());
+    }
+
+    private PurchaseOrderRow orderRowRow() {
+        PurchaseOrderRow r = new PurchaseOrderRow();
+        r.setId(7L);
+        r.setOrderNo("PO20261029000001");
+        r.setRequestId(100L);
+        r.setRequestNo("PR20261029000001");
+        r.setReason("买纸");
+        r.setSupplier("华夏办公");
+        r.setAmount(new java.math.BigDecimal("45.00"));
+        r.setStatus("CREATED");
+        r.setCreateTime(java.time.LocalDateTime.of(2026, 10, 29, 20, 0));
+        return r;
     }
 
     @Test

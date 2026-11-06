@@ -1,5 +1,8 @@
 package com.enterprise.procurement.business;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.enterprise.procurement.dto.PageResult;
 import com.enterprise.procurement.dto.PurchaseRequestDtos;
 import com.enterprise.procurement.dto.PurchaseViewDtos;
 import com.enterprise.procurement.exception.ErrorCode;
@@ -14,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -235,17 +239,87 @@ public class PurchaseBusinessService {
      * <p>改造前对非特权角色是"查全量再逐行点查申请单"的 N+1，一条订单一次查询。
      * 现在把归属条件下推到 SQL，一次扫描完成；供应商名称也由 JOIN 带出。</p>
      */
-    public List<PurchaseViewDtos.OrderRow> orderList(String username) {
+    /**
+     * 订单分页。
+     *
+     * <p>改造前这个列表既没有分页也没有过滤，一次返回全表。现在 page/size 由分页插件
+     * 翻译成 LIMIT，{@code total} 是真实总数；{@code size} 夹在 1–100，
+     * 防止 {@code ?size=999999} 把整表读进内存（插件层还有 200 的硬上限）。</p>
+     *
+     * <p>归属裁剪仍在 SQL 层：特权角色走 {@code pageAll}，其他人走 {@code pageFor}，
+     * 不存在"先查全量再在内存里筛"的退化路径。</p>
+     */
+    public PageResult<PurchaseViewDtos.OrderRow> orderPage(String username, String status, String keyword,
+                                                           Long supplierId, int page, int size) {
         Viewer v = viewer(username);
-        List<PurchaseOrderRow> rows = (v.admin() || v.has("PURCHASER") || v.has("WAREHOUSE"))
-                ? orders.rows()
-                : orders.rowsFor(v.id(), v.departmentId());
-        return rows.stream().map(PurchaseBusinessService::toOrderRow).toList();
+        int p = Math.max(1, page);
+        int s = Math.min(Math.max(1, size), 100);
+        String st = blankToNull(status);
+        String kw = blankToNull(keyword);
+
+        IPage<PurchaseOrderRow> result = (v.admin() || v.has("PURCHASER") || v.has("WAREHOUSE"))
+                ? orders.pageAll(new Page<>(p, s), st, kw, supplierId)
+                : orders.pageFor(new Page<>(p, s), v.id(), v.departmentId(), st, kw, supplierId);
+
+        List<PurchaseViewDtos.OrderRow> rows = result.getRecords().stream()
+                .map(PurchaseBusinessService::toOrderRow).toList();
+        return PageResult.of(rows, result.getTotal(), result.getCurrent(), result.getSize());
     }
 
-    public PurchaseViewDtos.OrderRow orderDetail(Long id, String username) {
+    /**
+     * 订单详情（含明细）。
+     *
+     * <p>改造前只有行数据，采购员看不到买了什么。明细本来就在
+     * {@code purchase_order_item} 里，缺的只是一个读它的接口。</p>
+     */
+    public PurchaseViewDtos.OrderDetail orderDetail(Long id, String username) {
         PurchaseOrderEntity o = getOrder(id, username); // 归属判断，越权即 404
-        return toOrderRow(orders.rowById(o.getId()), o);
+        PurchaseOrderRow row = orders.rowById(o.getId());
+        List<PurchaseViewDtos.ItemRow> detailItems = orderItems.byOrder(id).stream()
+                .map(i -> new PurchaseViewDtos.ItemRow(i.getId(), i.getProductId(), i.getProductName(),
+                        i.getQuantity(), i.getUnitPrice(), i.getAmount()))
+                .toList();
+
+        if (row == null) {
+            // JOIN 落空（申请单被物理删除等极端情况）：退回实体字段，保证详情不返回 null
+            return new PurchaseViewDtos.OrderDetail(o.getId(), o.getOrderNo(), o.getRequestId(), null, null,
+                    null, o.getTotalAmount(), o.getStatus(), o.getCreatedAt(), detailItems);
+        }
+        return new PurchaseViewDtos.OrderDetail(row.getId(), row.getOrderNo(), row.getRequestId(),
+                row.getRequestNo(), row.getReason(), row.getSupplier(), row.getAmount(), row.getStatus(),
+                row.getCreateTime(), detailItems);
+    }
+
+    /**
+     * 审批留痕。
+     *
+     * <p>复用申请详情的可见性判断：能看到这张单的人，才能看到它是谁批的。
+     * 改造前 {@code approval_record} 只写不读，页面上"谁批的、批注是什么"完全不可见，
+     * 出了问题只能翻数据库。</p>
+     */
+    public List<PurchaseViewDtos.ApprovalRow> approvalHistory(Long id, String username) {
+        get(id, username); // 不存在/无权 → 404，不额外暴露记录是否存在
+        return approvals.rowsByRequest(id).stream()
+                .map(a -> new PurchaseViewDtos.ApprovalRow(a.getId(), a.getApprover(),
+                        a.getAction(), a.getComment(), a.getCreateTime()))
+                .toList();
+    }
+
+    /**
+     * 库存流水分页。
+     *
+     * <p>改造前 {@code SELECT * ... ORDER BY created_at DESC} 无 LIMIT，
+     * 流水是只增表，跑久了必然把整表读进内存。日期的 {@code to} 按"含当天"处理
+     * （SQL 里用 {@code < to + 1 天}），否则用户选 11-01 到 11-01 会查不到任何数据。</p>
+     */
+    public PageResult<InventoryTransactionRow> transactionPage(Long productId, String type,
+                                                               LocalDate from, LocalDate to,
+                                                               int page, int size) {
+        int p = Math.max(1, page);
+        int s = Math.min(Math.max(1, size), 100);
+        IPage<InventoryTransactionRow> result = transactions.pageRows(new Page<>(p, s),
+                productId, blankToNull(type), from, to);
+        return PageResult.of(result.getRecords(), result.getTotal(), result.getCurrent(), result.getSize());
     }
 
     /** 可下单的申请：审批通过且尚未生成订单。采购下单页的下拉数据源。 */
@@ -263,16 +337,6 @@ public class PurchaseBusinessService {
                 r.getReason(), r.getSupplier(), r.getAmount(), r.getStatus(), r.getCreateTime());
     }
 
-    /**
-     * JOIN 落空时退回实体字段（理论上不会发生，除非申请单被物理删除），
-     * 保证详情接口不会因为一次 LEFT JOIN 落空就返回 null。
-     */
-    private static PurchaseViewDtos.OrderRow toOrderRow(PurchaseOrderRow r, PurchaseOrderEntity o) {
-        if (r != null) return toOrderRow(r);
-        return new PurchaseViewDtos.OrderRow(o.getId(), o.getOrderNo(), o.getRequestId(), null, null,
-                null, o.getTotalAmount(), o.getStatus(), o.getCreatedAt());
-    }
-
     private static String blankToNull(String s) {
         return s == null || s.isBlank() ? null : s.trim();
     }
@@ -286,10 +350,6 @@ public class PurchaseBusinessService {
 
     public List<InventoryStockRow> stock() {
         return stock.stockRows();
-    }
-
-    public List<InventoryTransactionEntity> transactions() {
-        return transactions.recent();
     }
 
     /**
@@ -468,7 +528,11 @@ public class PurchaseBusinessService {
         Viewer v = viewer(username);
         PurchaseRequestEntity r = requireRequest(id);
         if (!Objects.equals(r.getApplicantId(), v.id())) throw new ForbiddenException("仅草稿本人可编辑");
-        if (!ApplicationStatus.DRAFT.name().equals(r.getStatus())) throw new IllegalStateException("仅草稿状态可编辑");
+        if (!ApplicationStatus.DRAFT.name().equals(r.getStatus())) {
+            // 状态不对属于"冲突"而不是"参数错"：用户点的是同一张单，只是它已经进了审批流程。
+            // 改造前这里抛 IllegalStateException → 400，和"事由填错"同码，前端无法提示"刷新"。
+            throw new StateConflictException("申请已进入审批流程，本次修改未生效");
+        }
 
         requestItems.deleteByRequest(id);
         BigDecimal total = fillItems(id, dto.items());
@@ -583,8 +647,16 @@ public class PurchaseBusinessService {
     public PurchaseOrderEntity createOrder(Long requestId, Long supplierId) {
         PurchaseRequestEntity r = requireRequest(requestId);
         if (!ApplicationStatus.APPROVED.name().equals(r.getStatus())) {
-            // 状态问题而不是参数问题：未通过审批/已被别人下单，都应 409 而非 400
-            throw new StateConflictException("申请未审批通过或已进入采购流程");
+            // 区分两种"下不了单"：已经下过单（PURCHASING/COMPLETED）给 REQUEST_ALREADY_ORDERED，
+            // 其余（草稿/待审/驳回）给通用 STATE_CONFLICT。
+            // 改造前一律 throw IllegalStateException("申请未审批通过") → 400，
+            // 既分不清状态，也让唯一键兜底那条分支永远走不到（前置检查先命中）。
+            boolean alreadyOrdered = ApplicationStatus.PURCHASING.name().equals(r.getStatus())
+                    || ApplicationStatus.COMPLETED.name().equals(r.getStatus());
+            if (alreadyOrdered) {
+                throw new StateConflictException(ErrorCode.REQUEST_ALREADY_ORDERED, "该采购申请已生成订单，请勿重复下单");
+            }
+            throw new StateConflictException("申请未审批通过，无法下单");
         }
         // catalog.supplier 带 active=1 条件：已停用的供应商不能再下单，提示要能区分"没这个供应商"
         if (catalog.supplier(supplierId) == null) throw new IllegalArgumentException("供应商不存在或已停用");

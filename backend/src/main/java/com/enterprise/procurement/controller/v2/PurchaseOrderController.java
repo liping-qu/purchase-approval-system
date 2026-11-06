@@ -43,10 +43,21 @@ public class PurchaseOrderController {
         return ApiResponse.ok(service.orderableRequests());
     }
 
-    /** 列表按角色裁剪：采购/仓库/管理员看全部，其他人只看与自己申请相关的。 */
+    /**
+     * 订单列表（分页）。
+     *
+     * <p>返回值从"数组"改成 {@code {records,total,page,size}}。前端原有代码
+     * {@code Array.isArray(data) ? data : data?.records} 两种都能吃，所以这是兼容变更；
+     * 新增的 {@code total} 才让分页器算得出页数。</p>
+     */
     @GetMapping
-    public ApiResponse<?> list(Principal principal) {
-        return ApiResponse.ok(service.orderList(principal.getName()));
+    public ApiResponse<?> list(@RequestParam(defaultValue = "1") int page,
+                              @RequestParam(defaultValue = "20") int size,
+                              @RequestParam(required = false) String status,
+                              @RequestParam(required = false) String keyword,
+                              @RequestParam(required = false) Long supplierId,
+                              Principal principal) {
+        return ApiResponse.ok(service.orderPage(principal.getName(), status, keyword, supplierId, page, size));
     }
 
     @GetMapping("/{id}")

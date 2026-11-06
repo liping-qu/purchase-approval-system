@@ -44,6 +44,18 @@ public class PurchaseRequestController {
         return ApiResponse.ok(service.requestItems(id, principal.getName()));
     }
 
+    /**
+     * 审批留痕。
+     *
+     * <p>{@code approval_record} 一直在写，但改造前<b>没有任何接口读它</b>：
+     * 页面上看不到谁批的、什么时候批的、批注写了什么，出问题只能翻数据库。
+     * 可见性与申请详情一致（复用同一套归属判断）。</p>
+     */
+    @GetMapping("/{id}/approvals")
+    public ApiResponse<?> approvals(@PathVariable Long id, Principal principal) {
+        return ApiResponse.ok(service.approvalHistory(id, principal.getName()));
+    }
+
     @PostMapping
     @OperationLog(value = "创建采购申请", module = "采购申请")
     public ApiResponse<?> create(@Valid @RequestBody PurchaseRequestDtos.Create dto,

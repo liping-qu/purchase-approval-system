@@ -5,10 +5,12 @@ import com.enterprise.procurement.business.PurchaseBusinessService;
 import com.enterprise.procurement.dto.ApiResponse;
 import com.enterprise.procurement.dto.InventoryDtos;
 import jakarta.validation.Valid;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
+import java.time.LocalDate;
 
 /**
  * 库存查询与手工调整。
@@ -33,9 +35,22 @@ public class InventoryController {
         return ApiResponse.ok(service.stock());
     }
 
+    /**
+     * 库存流水（分页）。
+     *
+     * <p>改造前是无 LIMIT 的 {@code SELECT *}，流水只增不删，跑久了必然拖垮接口。
+     * {@code to} 按"含当天"处理（SQL 里 {@code < to + 1 天}），否则同一天起止查不到数据。</p>
+     */
     @GetMapping("/transactions")
-    public ApiResponse<?> transactions() {
-        return ApiResponse.ok(service.transactions());
+    public ApiResponse<?> transactions(@RequestParam(defaultValue = "1") int page,
+                                       @RequestParam(defaultValue = "20") int size,
+                                       @RequestParam(required = false) Long productId,
+                                       @RequestParam(required = false) String type,
+                                       @RequestParam(required = false)
+                                       @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+                                       @RequestParam(required = false)
+                                       @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        return ApiResponse.ok(service.transactionPage(productId, type, from, to, page, size));
     }
 
     /**
